@@ -1,0 +1,78 @@
+# Frequently Asked Questions (FAQ)
+
+## General Questions
+
+### Q: What is AcmeAI?
+A: AcmeAI is an enterprise AI platform that provides conversational AI, retrieval-augmented generation (RAG), and analytics solutions. It helps businesses automate customer support, knowledge management, and data analysis.
+
+### Q: Who can use AcmeAI?
+A: AcmeAI is designed for businesses of all sizes, from startups to large enterprises. Our tiered pricing ensures accessibility for small teams while providing advanced features for larger organizations.
+
+### Q: Is my data secure with AcmeAI?
+A: Yes! We take security seriously. AcmeAI is SOC 2 Type II certified, GDPR compliant, and HIPAA compliant. All data is encrypted at rest and in transit using AES-256 encryption.
+
+## Technical Questions
+
+### Q: What file formats are supported for the knowledge base?
+A: We support PDF, Word documents (.docx), Excel spreadsheets (.xlsx), plain text (.txt), Markdown (.md), HTML, and JSON files. Custom parsers can be configured for Enterprise customers.
+
+### Q: What embedding models do you use?
+A: By default, we use OpenAI's text-embedding-3-large model. Enterprise customers can configure alternative models including Cohere, Anthropic, or custom self-hosted models.
+
+### Q: What is the maximum document size?
+A: Individual documents can be up to 100MB. For larger documents, we recommend splitting them into logical sections for better retrieval performance.
+
+### Q: How often is the knowledge base updated?
+A: Documents are indexed within seconds of upload. The vector embeddings are generated immediately and available for search. For scheduled updates from external sources, you can configure automated sync.
+
+### Q: Can I use my own LLM?
+A: Yes! Enterprise customers can bring their own LLM, including self-hosted models, Azure OpenAI, or other providers. Contact sales for custom integration.
+
+## Billing Questions
+
+### Q: How are API calls counted?
+A: Each request to our endpoints counts as one API call, regardless of the response length. Streaming responses count as a single call.
+
+### Q: What happens if I exceed my API limit?
+A: You'll receive a 429 rate limit error. You can upgrade your plan for higher limits or implement retry logic with exponential backoff.
+
+### Q: Can I change plans mid-month?
+A: Yes! Plan upgrades take effect immediately, and you'll be charged the prorated difference. Downgrades take effect at the next billing cycle.
+
+### Q: Do you offer annual pricing?
+A: Yes, annual subscriptions receive a 20% discount. Enterprise customers can negotiate custom terms.
+
+## Support
+
+### Q: How do I contact support?
+A: 
+- Email: support@acme-corp.example.com
+- Chat: Available in your dashboard (Professional and Enterprise)
+- Phone: 1-800-ACME-AI (Enterprise only)
+
+### Q: What are the support hours?
+A: 
+- Starter: Email support, 24-48 hour response
+- Professional: Priority email, 4-hour response during business hours
+- Enterprise: 24/7 phone and email support
+
+### Q: Where can I find documentation?
+A: Full documentation is available at docs.acme-corp.example.com. We also provide SDK documentation, API references, and tutorials.
+
+## Troubleshooting
+
+### Q: Why am I getting "No relevant documents found"?
+A: This usually means your query doesn't match any documents in your knowledge base. Try:
+1. Using different keywords
+2. Checking if documents are properly uploaded
+3. Ensuring documents contain the information you're looking for
+
+### Q: Why are responses slow?
+A: Slow responses can be caused by:
+1. Large knowledge bases taking longer to search
+2. Complex queries requiring more processing
+3. Network latency
+Consider enabling caching for frequently asked questions.
+
+### Q: How do I reset my API key?
+A: Go to Settings > API Keys in your dashboard. Click "Regenerate" to create a new key. Note: The old key will be immediately invalidated.

@@ -1,0 +1,67 @@
+# Company Information - Acme Corporation
+
+## About Us
+Acme Corporation is a leading technology company founded in 2010. We specialize in building innovative AI-powered solutions for enterprise customers. Our headquarters is located in San Francisco, California, with offices in New York, London, and Tokyo.
+
+## Mission Statement
+Our mission is to democratize artificial intelligence and make it accessible to businesses of all sizes. We believe that AI should be a tool for empowerment, not replacement.
+
+## Our Products
+
+### AcmeAI Assistant
+Our flagship product, AcmeAI Assistant, is an enterprise-grade conversational AI platform. Key features include:
+- Natural language understanding
+- Multi-language support (50+ languages)
+- Custom knowledge base integration
+- Role-based access control
+- SOC 2 Type II certified
+
+### AcmeRAG Platform
+AcmeRAG Platform enables businesses to build retrieval-augmented generation systems. It supports:
+- Multiple document formats (PDF, Word, Excel, HTML)
+- Vector database integration
+- Semantic search capabilities
+- Real-time document updates
+
+### AcmeAnalytics
+AcmeAnalytics provides AI-powered business intelligence:
+- Predictive analytics
+- Anomaly detection
+- Custom dashboards
+- Automated reporting
+
+## Pricing Plans
+
+### Starter Plan - $99/month
+- Up to 10,000 API calls
+- 5 GB knowledge base storage
+- Email support
+- 2 team members
+
+### Professional Plan - $499/month
+- Up to 100,000 API calls
+- 50 GB knowledge base storage
+- Priority email support
+- 10 team members
+- Custom integrations
+
+### Enterprise Plan - Custom pricing
+- Unlimited API calls
+- Unlimited storage
+- 24/7 phone support
+- Unlimited team members
+- Dedicated account manager
+- On-premise deployment option
+
+## Contact Information
+- Website: www.acme-corp.example.com
+- Email: support@acme-corp.example.com
+- Phone: 1-800-ACME-AI (1-800-226-3241)
+- Address: 123 Innovation Way, San Francisco, CA 94105
+
+## Leadership Team
+- CEO: Jane Smith
+- CTO: John Doe
+- CFO: Sarah Johnson
+- VP of Engineering: Michael Chen
+- VP of Sales: Emily Brown
