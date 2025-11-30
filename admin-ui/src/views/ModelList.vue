@@ -291,49 +291,48 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* Full width layout */
-.model-list.full-width { width: 100%; padding: 1.25rem; }
-.page-header { display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; }
-.page-header h1 { margin:0; font-size:1.5rem }
-.subtitle { margin:4px 0 0; color:#6c757d; font-size:0.9rem }
+/* Full width layout — use more horizontal space and reduce side padding */
+.model-list.full-width { width: 100%; padding: 0.75rem 0.75rem; margin: 0; max-width: none; }
+.page-header { display:flex; justify-content:space-between; align-items:flex-start; gap:0.75rem; padding: 0 0.5rem }
+.page-header h1 { margin:0; font-size:1.4rem }
+.subtitle { margin:4px 0 0; color:#6c757d; font-size:0.88rem }
 
-.toolbar { display:flex; justify-content:space-between; gap:1rem; align-items:center; flex-wrap:wrap }
-.tools-left { display:flex; gap:0.75rem; align-items:center }
+.toolbar { display:flex; justify-content:space-between; gap:0.5rem; align-items:center; flex-wrap:wrap; padding: 0 0.5rem }
+.tools-left { display:flex; gap:0.5rem; align-items:center; flex: 1; }
 .tools-right { display:flex; gap:0.5rem; align-items:center }
-.form-input { padding:0.5rem 0.75rem; border:1px solid #ced4da; border-radius:6px }
-.form-select { padding:0.45rem 0.6rem; border:1px solid #ced4da; border-radius:6px }
+.form-input { padding:0.4rem 0.6rem; border:1px solid #ced4da; border-radius:6px; min-width: 220px }
+.form-select { padding:0.35rem 0.5rem; border:1px solid #ced4da; border-radius:6px }
 
-.card-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem }
-.model-card { background:#fff; border:1px solid #e6e9ee; border-radius:10px; display:flex; flex-direction:column; overflow:hidden }
-.card-header { display:flex; justify-content:space-between; align-items:center; padding:0.9rem 1rem; border-bottom:1px solid #f1f5f9 }
-.card-body{ padding:0.9rem 1rem }
-.card-actions{ display:flex; gap:0.5rem; justify-content:flex-end; padding:0.75rem 1rem; background:#fafbfc }
+/* tighter grid and reduced card padding to fit more content horizontally */
+.card-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:0.75rem }
+.model-card { background:#fff; border:1px solid #e6e9ee; border-radius:8px; display:flex; flex-direction:column; overflow:hidden }
+.card-header { display:flex; justify-content:space-between; align-items:center; padding:0.6rem 0.75rem; border-bottom:1px solid #f1f5f9 }
+.card-body{ padding:0.6rem 0.75rem }
+.card-actions{ display:flex; gap:0.4rem; justify-content:flex-end; padding:0.5rem 0.75rem; background:#fafbfc }
 .model-name{ margin:0; font-weight:600 }
-.model-meta{ font-size:0.85rem; color:#6b7280 }
-.status-badge{ padding:0.18rem 0.6rem; border-radius:999px; font-weight:600; font-size:0.75rem }
-.status-active{ background:#dcfce7; color:#15803d }
-.status-enabled{ background:#dbeafe; color:#1d4ed8 }
-.status-disabled{ background:#eef2f6; color:#475569 }
+.model-meta{ font-size:0.82rem; color:#6b7280 }
+.status-badge{ padding:0.12rem 0.45rem; border-radius:999px; font-weight:600; font-size:0.72rem }
 
-.model-table{ width:100%; border-collapse:collapse; background:#fff; border:1px solid #e6e9ee; border-radius:8px; overflow:hidden }
-.model-table th,.model-table td{ padding:0.6rem 0.85rem; border-bottom:1px solid #eef2f6 }
-.model-table th{ background:#f7fafc; text-align:left }
-.actions-cell{ display:flex; gap:0.5rem; justify-content:flex-end }
+/* use denser table spacing */
+.model-table{ width:100%; border-collapse:collapse; background:#fff; border:1px solid #e6e9ee; border-radius:6px; overflow:hidden }
+.model-table th,.model-table td{ padding:0.45rem 0.6rem; border-bottom:1px solid #eef2f6 }
+.model-table th{ background:#f7fafc; text-align:left; font-size:0.86rem }
+.actions-cell{ display:flex; gap:0.4rem; justify-content:flex-end }
 
-.icon-button{ width:36px; height:36px; border-radius:8px; display:inline-flex; align-items:center; justify-content:center; border:none; background:#fff }
-.icon-button svg{ width:16px; height:16px }
+.icon-button{ width:32px; height:32px; border-radius:6px; display:inline-flex; align-items:center; justify-content:center; border:none; background:#fff }
+.icon-button svg{ width:14px; height:14px }
 .icon-button-success{ background:#e6f5ec; color:#0f9d58 }
 .icon-button-warning{ background:#fff4e6; color:#c2410c }
 .icon-button-danger{ background:#fee2e2; color:#bb1e1e }
 
-.btn-primary{ background:#212529; color:#fff; padding:0.5rem 0.9rem; border-radius:6px }
-.btn-secondary{ background:#eef2f6; padding:0.45rem 0.8rem; border-radius:6px }
+.btn-primary{ background:#212529; color:#fff; padding:0.45rem 0.75rem; border-radius:6px }
+.btn-secondary{ background:#eef2f6; padding:0.35rem 0.6rem; border-radius:6px }
 
-.empty-state{ padding:1.25rem; text-align:center; color:#6b7280 }
-.alert{ background:#fcebea; color:#9f3a38; padding:0.75rem; border-radius:8px }
-.loading-indicator{ padding:1rem; border:1px solid #eef2f6; border-radius:8px; display:flex; gap:0.5rem; align-items:center }
-.spinner{ width:16px; height:16px; border:2px solid #e6e9ee; border-top-color:#212529; border-radius:50%; animation:spin 0.8s linear infinite }
-.spinner-small{ width:12px; height:12px; border:2px solid transparent; border-top-color:currentColor; border-radius:50%; animation:spin 0.8s linear infinite }
+.empty-state{ padding:0.9rem; text-align:center; color:#6b7280 }
+.alert{ background:#fcebea; color:#9f3a38; padding:0.6rem; border-radius:6px }
+.loading-indicator{ padding:0.6rem; border:1px solid #eef2f6; border-radius:6px; display:flex; gap:0.5rem; align-items:center }
+.spinner{ width:14px; height:14px; border:2px solid #e6e9ee; border-top-color:#212529; border-radius:50%; animation:spin 0.8s linear infinite }
+.spinner-small{ width:10px; height:10px; border:2px solid transparent; border-top-color:currentColor; border-radius:50%; animation:spin 0.8s linear infinite }
 
 .sr-only{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0 }
 
