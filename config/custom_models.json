@@ -1,8 +1,8 @@
 {
-  "active_model_id": "default",
+  "active_model_id": "78d78a86-55b2-4df6-9a78-5315bcfe9f77",
   "active_model_ids": [
-    "default",
-    "78d78a86-55b2-4df6-9a78-5315bcfe9f77"
+    "78d78a86-55b2-4df6-9a78-5315bcfe9f77",
+    "default"
   ],
   "models": {
     "default": {

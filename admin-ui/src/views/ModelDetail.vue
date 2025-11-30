@@ -1,7 +1,8 @@
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useModelsStore } from '../store'
+import { Cog6ToothIcon } from '@heroicons/vue/24/outline'
 
 const store = useModelsStore()
 const router = useRouter()
@@ -14,6 +15,7 @@ const versions = ref([])
 const versionsLoading = ref(false)
 const editMode = ref(false)
 const error = ref('')
+const settingsDropdownOpen = ref(false)
 
 // Edit form state
 const editForm = reactive({
@@ -32,6 +34,12 @@ const editSubmitting = ref(false)
 
 const MODEL_NAME_PATTERN = /^[a-z][a-z0-9_-]*$/
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/
+
+// Available base models for dropdown
+const AVAILABLE_BASE_MODELS = [
+  { value: 'gpt-oss:20b-cloud', label: 'GPT-OSS 20B Cloud' },
+  { value: 'gpt-oss:120b-cloud', label: 'GPT-OSS 120B Cloud' },
+]
 
 const availableTools = computed(() => store.tools)
 
@@ -173,28 +181,94 @@ async function deactivateVersion(version) {
   }
 }
 
+async function removeModel() {
+  if (!window.confirm('Are you sure you want to permanently delete this model? This action cannot be undone.')) return
+  
+  try {
+    await store.deleteModel(route.params.id)
+    router.push('/')
+  } catch (e) {
+    error.value = e.message || 'Failed to delete model'
+  }
+}
+
+async function disableModel() {
+  try {
+    await store.updateModel(route.params.id, { enabled: false })
+    await loadModel()
+  } catch (e) {
+    error.value = e.message || 'Failed to disable model'
+  }
+}
+
+function toggleSettingsDropdown() {
+  settingsDropdownOpen.value = !settingsDropdownOpen.value
+}
+
+function closeSettingsDropdown() {
+  settingsDropdownOpen.value = false
+}
+
+// Click outside handler
 onMounted(async () => {
   await store.fetchTools()
   await loadModel()
+
+  // Add click outside handler
+  const handleClickOutside = (event) => {
+    const dropdown = document.querySelector('.settings-dropdown')
+    if (dropdown && !dropdown.contains(event.target)) {
+      closeSettingsDropdown()
+    }
+  }
+
+  document.addEventListener('click', handleClickOutside)
+
+  // Cleanup on unmount
+  onUnmounted(() => {
+    document.removeEventListener('click', handleClickOutside)
+  })
 })
 </script>
 
 <template>
   <div class="model-detail">
+    <!-- Back Navigation -->
+    <div class="back-navigation">
+      <router-link to="/" class="back-link">← Back to Models</router-link>
+    </div>
+
     <!-- Header -->
     <div class="page-header">
-      <router-link to="/" class="back-link">← Back to Models</router-link>
       <div class="header-content">
         <h1 v-if="!editMode" class="page-title">{{ model?.name }}</h1>
         <div v-if="!editMode" class="header-meta">
           v{{ model?.version }} · {{ model?.base_model || 'Default' }} · Active: {{ model?.active ? 'Yes' : 'No' }}
         </div>
       </div>
-      <div v-if="!editMode" class="header-actions">
-        <button class="btn btn-primary" @click="enterEditMode">Edit</button>
-      </div>
-      <div v-else class="header-actions">
-        <button class="btn btn-secondary" @click="exitEditMode">Cancel</button>
+      <div class="header-actions">
+        <div class="settings-dropdown" v-if="!editMode">
+          <button 
+            class="settings-button" 
+            @click="toggleSettingsDropdown"
+            :aria-expanded="settingsDropdownOpen"
+            aria-haspopup="true"
+          >
+            <Cog6ToothIcon class="w-5 h-5" />
+          </button>
+          <div v-if="settingsDropdownOpen" class="settings-menu" @mouseleave="closeSettingsDropdown">
+            <button class="settings-item" @click="enterEditMode(); closeSettingsDropdown()">
+              <span>Edit</span>
+            </button>
+            <button class="settings-item settings-item-warning" @click="disableModel(); closeSettingsDropdown()">
+              <span>Disable</span>
+            </button>
+            <button class="settings-item settings-item-danger" @click="removeModel(); closeSettingsDropdown()">
+              <span>Remove</span>
+            </button>
+          </div>
+        </div>
+        <button v-else class="btn btn-secondary" @click="exitEditMode">Cancel</button>
       </div>
     </div>
 
@@ -297,12 +371,19 @@ onMounted(async () => {
 
           <div class="form-group">
             <label class="form-label">Base Model</label>
-            <input 
+            <select 
               v-model="editForm.baseModel" 
-              type="text"
-              class="form-input"
-              placeholder="e.g. qwen3:8b (optional)"
-            />
+              class="form-select"
+            >
+              <option value="">Select a base model (optional)</option>
+              <option 
+                v-for="model in AVAILABLE_BASE_MODELS" 
+                :key="model.value" 
+                :value="model.value"
+              >
+                {{ model.label }}
+              </option>
+            </select>
           </div>
 
           <div class="form-group">
@@ -444,6 +525,26 @@ onMounted(async () => {
   padding: 1.25rem;
 }
 
+/* Back Navigation */
+.back-navigation {
+  margin-bottom: 1rem;
+}
+
+.back-link {
+  color: #0066cc;
+  text-decoration: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: color 0.2s;
+}
+
+.back-link:hover {
+  color: #0052a3;
+}
+
 /* Header */
 .page-header {
   display: flex;
@@ -452,21 +553,6 @@ onMounted(async () => {
   margin-bottom: 2rem;
   gap: 1rem;
   flex-wrap: wrap;
-}
-
-.back-link {
-  color: #0066cc;
-  text-decoration: none;
-  font-size: 0.875rem;
-  font-weight: 500;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  transition: color 0.2s;
-}
-
-.back-link:hover {
-  color: #0052a3;
 }
 
 .header-content {
@@ -609,7 +695,8 @@ onMounted(async () => {
 }
 
 .form-input,
-.form-textarea {
+.form-textarea,
+.form-select {
   width: 100%;
   padding: 0.75rem;
   border: 1px solid #ced4da;
@@ -620,7 +707,8 @@ onMounted(async () => {
 }
 
 .form-input:focus,
-.form-textarea:focus {
+.form-textarea:focus,
+.form-select:focus {
   outline: none;
   border-color: #0066cc;
   box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
@@ -736,65 +824,95 @@ onMounted(async () => {
   gap: 0.5rem;
 }
 
-/* Buttons */
-.btn {
-  display: inline-flex;
+/* Settings Dropdown */
+.settings-dropdown {
+  position: relative;
+}
+
+.settings-button {
+  display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0.5rem 1rem;
-  border: none;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 1px solid #ced4da;
   border-radius: 6px;
+  background: #fff;
+  color: #6c757d;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.settings-button:hover {
+  background: #f8f9fa;
+  border-color: #adb5bd;
+  color: #495057;
+}
+
+.settings-button:focus {
+  outline: none;
+  border-color: #0066cc;
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
+}
+
+.settings-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 10;
+  width: 160px;
+  background: #fff;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  margin-top: 0.25rem;
+}
+
+.settings-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: none;
+  background: none;
+  color: #212529;
   font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s;
-  text-decoration: none;
+  transition: background-color 0.2s;
+  text-align: left;
 }
 
-.btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+.settings-item:hover {
+  background: #f8f9fa;
 }
 
-.btn-primary {
-  background: #0066cc;
-  color: #fff;
+.settings-item:first-child {
+  border-radius: 6px 6px 0 0;
 }
 
-.btn-primary:hover:not(:disabled) {
-  background: #0052a3;
+.settings-item:last-child {
+  border-radius: 0 0 6px 6px;
 }
 
-.btn-secondary {
-  background: #e9ecef;
-  color: #212529;
+.settings-item:only-child {
+  border-radius: 6px;
 }
 
-.btn-secondary:hover:not(:disabled) {
-  background: #dee2e6;
+.settings-item-warning {
+  color: #856404;
 }
 
-.btn-success {
-  background: #28a745;
-  color: #fff;
+.settings-item-warning:hover {
+  background: #fff3cd;
 }
 
-.btn-success:hover:not(:disabled) {
-  background: #218838;
+.settings-item-danger {
+  color: #721c24;
 }
 
-.btn-warning {
-  background: #ffc107;
-  color: #212529;
-}
-
-.btn-warning:hover:not(:disabled) {
-  background: #e0a800;
-}
-
-.btn-sm {
-  padding: 0.375rem 0.75rem;
-  font-size: 0.8125rem;
+.settings-item-danger:hover {
+  background: #f8d7da;
 }
 
 /* States */

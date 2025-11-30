@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useModelsStore } from '../store'
+import { EyeIcon, PlayIcon, PauseIcon, TrashIcon } from '@heroicons/vue/24/outline'
 
 // Types
 interface RagSettings {
@@ -128,6 +129,14 @@ async function onDeactivate(m: Model) {
   }
 }
 
+async function onToggleModel(m: Model) {
+  if (m.active) {
+    await onDeactivate(m)
+  } else {
+    await onActivate(m)
+  }
+}
+
 async function onDelete(m: Model) {
   if (!window.confirm('Are you sure you want to delete this model?')) return
   deleteLoading.value = m.id
@@ -250,21 +259,28 @@ onMounted(() => {
         </div>
 
         <footer class="card-actions">
-          <router-link :to="`/models/${model.id}`" class="icon-button icon-button-secondary" aria-label="View model details" title="View Details"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3l6 5-6 5" /></svg><span class="sr-only">View</span></router-link>
+          <router-link :to="`/models/${model.id}`" class="icon-button icon-button-secondary" aria-label="View model details" title="View Details"><EyeIcon class="w-4 h-4" /><span class="sr-only">View</span></router-link>
 
-          <button v-if="!model.active" class="icon-button icon-button-success" :disabled="activationLoading === model.id" @click="onActivate(model)" type="button" aria-label="Activate model">
-            <span v-if="activationLoading === model.id" class="spinner-small" aria-hidden="true"></span>
-            <svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 4v8" /><path d="M4 8h8" /></svg>
-          </button>
-
-          <button v-else class="icon-button icon-button-warning" :disabled="deactivationLoading === model.id" @click="onDeactivate(model)" type="button" aria-label="Deactivate model">
-            <span v-if="deactivationLoading === model.id" class="spinner-small" aria-hidden="true"></span>
-            <svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 8h8" /></svg>
-          </button>
+          <div class="toggle-switch">
+            <input
+              type="checkbox"
+              :id="`toggle-${model.id}`"
+              :checked="model.active"
+              :disabled="activationLoading === model.id || deactivationLoading === model.id"
+              @change="onToggleModel(model)"
+              class="toggle-input"
+            />
+            <label :for="`toggle-${model.id}`" class="toggle-label">
+              <span class="toggle-slider"></span>
+              <span v-if="activationLoading === model.id || deactivationLoading === model.id" class="toggle-spinner">
+                <span class="spinner-small"></span>
+              </span>
+            </label>
+          </div>
 
           <button class="icon-button icon-button-danger" :disabled="deleteLoading === model.id" @click="onDelete(model)" type="button" aria-label="Delete model">
             <span v-if="deleteLoading === model.id" class="spinner-small" aria-hidden="true"></span>
-            <svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5h8" /><path d="M6.5 5V3.5h3V5" /><path d="M5.5 7v6" /><path d="M10.5 7v6" /></svg>
+            <TrashIcon v-else class="w-4 h-4" />
           </button>
         </footer>
       </article>
@@ -296,10 +312,24 @@ onMounted(() => {
               <td v-if="selectedColumns.tools">{{ formatTools(model.tool_names) }}</td>
               <td v-if="selectedColumns.params">{{ formatParams(model.model_params) }}</td>
               <td class="actions-cell">
-                <router-link :to="`/models/${model.id}`" class="icon-button icon-button-secondary" aria-label="View model details" title="View Details"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3l6 5-6 5" /></svg></router-link>
-                <button v-if="!model.active" class="icon-button icon-button-success" :disabled="activationLoading === model.id" @click="onActivate(model)" type="button" aria-label="Activate model"><span v-if="activationLoading === model.id" class="spinner-small" aria-hidden="true"></span><svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 4v8" /><path d="M4 8h8" /></svg></button>
-                <button v-else class="icon-button icon-button-warning" :disabled="deactivationLoading === model.id" @click="onDeactivate(model)" type="button" aria-label="Deactivate model"><span v-if="deactivationLoading === model.id" class="spinner-small" aria-hidden="true"></span><svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 8h8" /></svg></button>
-                <button class="icon-button icon-button-danger" :disabled="deleteLoading === model.id" @click="onDelete(model)" type="button" aria-label="Delete model"><span v-if="deleteLoading === model.id" class="spinner-small" aria-hidden="true"></span><svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5h8" /><path d="M6.5 5V3.5h3V5" /><path d="M5.5 7v6" /><path d="M10.5 7v6" /></svg></button>
+                <router-link :to="`/models/${model.id}`" class="icon-button icon-button-secondary" aria-label="View model details" title="View Details"><EyeIcon class="w-4 h-4" /></router-link>
+                <div class="toggle-switch">
+                  <input
+                    type="checkbox"
+                    :id="`toggle-table-${model.id}`"
+                    :checked="model.active"
+                    :disabled="activationLoading === model.id || deactivationLoading === model.id"
+                    @change="onToggleModel(model)"
+                    class="toggle-input"
+                  />
+                  <label :for="`toggle-table-${model.id}`" class="toggle-label">
+                    <span class="toggle-slider"></span>
+                    <span v-if="activationLoading === model.id || deactivationLoading === model.id" class="toggle-spinner">
+                      <span class="spinner-small"></span>
+                    </span>
+                  </label>
+                </div>
+                <button class="icon-button icon-button-danger" :disabled="deleteLoading === model.id" @click="onDelete(model)" type="button" aria-label="Delete model"><span v-if="deleteLoading === model.id" class="spinner-small" aria-hidden="true"></span><TrashIcon v-else class="w-4 h-4" /></button>
               </td>
             </tr>
           </template>
@@ -401,7 +431,7 @@ onMounted(() => {
 
 .card-header { display:flex; justify-content:space-between; align-items:flex-start; padding:1.25rem; border-bottom:1px solid #f8f9fa }
 .card-body{ padding:1.25rem; flex: 1; }
-.card-actions{ display:flex; gap:0.5rem; justify-content:flex-end; padding:1rem 1.25rem; background:#f8f9fa; border-top: 1px solid #e9ecef; }
+.card-actions{ display:flex; gap:0.5rem; justify-content:flex-end; align-items:center; padding:1rem 1.25rem; background:#f8f9fa; border-top: 1px solid #e9ecef; }
 
 .model-name{ margin:0 0 0.25rem 0; font-weight:600; font-size: 1.125rem; color: #212529; }
 .model-meta{ font-size:0.875rem; color:#6c757d }
@@ -480,7 +510,67 @@ onMounted(() => {
 .model-table th,.model-table td{ padding:0.75rem 1rem; border-bottom:1px solid #e9ecef; text-align: left; font-size: 0.875rem; }
 .model-table th{ background:#f8f9fa; font-weight: 600; color: #495057; white-space: nowrap; }
 .model-table tr:last-child td { border-bottom: none; }
-.actions-cell{ display:flex; gap:0.5rem; justify-content:flex-end }
+.actions-cell{ display:flex; gap:0.5rem; justify-content:flex-end; align-items:center }
+
+/* Toggle Switch */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  align-self: center;
+}
+
+.toggle-input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-label {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #ccc;
+  transition: 0.4s;
+  border-radius: 24px;
+}
+
+.toggle-label:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: 0.4s;
+  border-radius: 50%;
+}
+
+.toggle-input:checked + .toggle-label {
+  background-color: #28a745;
+}
+
+.toggle-input:checked + .toggle-label:before {
+  transform: translateX(20px);
+}
+
+.toggle-input:disabled + .toggle-label {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.toggle-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+}
 
 /* Small buttons */
 .btn-sm {
