@@ -1,11 +1,13 @@
 """LangGraph agent using Ollama API with tools and RAG (Qdrant + Remote Embeddings)"""
 import os
+import hashlib
+import json
 from datetime import datetime
-from typing import TypedDict, Annotated, Sequence, Literal, List, Optional
+from typing import TypedDict, Annotated, Sequence, Literal, List, Optional, Dict, Any
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage, SystemMessage
-from langchain_core.tools import tool
+from langchain_core.tools import tool, Tool
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_qdrant import QdrantVectorStore
@@ -13,19 +15,34 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 import operator
 import httpx
+from app.config import get_active_model, get_config_store
 
-# RAG Configuration
-RAG_ENABLED = os.getenv("RAG_ENABLED", "true").lower() == "true"
-RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
-
-def is_rag_enabled() -> bool:
+# RAG Configuration helpers live inside the admin config store
+def is_rag_enabled(model_id: Optional[str] = None) -> bool:
     """Expose the RAG toggle so callers can gate RAG endpoints."""
-    return RAG_ENABLED
+    return get_rag_settings(model_id).enabled
+
+
+def get_rag_settings(model_id: Optional[str] = None):
+    """Return the RAG settings for a specific model or the active model."""
+    if model_id:
+        model = get_config_store().get_model(model_id)
+        if model:
+            return model.rag_settings
+    return get_active_model().rag_settings
+
+
+def _get_model_for_request(model_id: Optional[str] = None):
+    """Get the model config for a request (by ID or active)."""
+    if model_id:
+        model = get_config_store().get_model(model_id)
+        if model:
+            return model
+    return get_active_model()
 
 # Qdrant Configuration
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
-QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "knowledge_base")
 
 # Remote Embedding Configuration
 RAG_EMBEDDING_ENGINE = os.getenv("RAG_EMBEDDING_ENGINE", "openai")
@@ -37,6 +54,7 @@ RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-ada-002")
 _vector_store: Optional[QdrantVectorStore] = None
 _embeddings: Optional[OpenAIEmbeddings] = None
 _qdrant_client: Optional[QdrantClient] = None
+_llm_cache: Dict[str, ChatOpenAI] = {}  # Cache LLM clients by config hash
 
 
 def get_qdrant_client() -> QdrantClient:
@@ -60,46 +78,59 @@ def get_embeddings() -> OpenAIEmbeddings:
     return _embeddings
 
 
-def ensure_collection_exists():
+def ensure_collection_exists(model_id: Optional[str] = None):
     """Ensure Qdrant collection exists, create if not"""
     client = get_qdrant_client()
+    rag_settings = get_rag_settings(model_id)
+    collection_name = rag_settings.collection
     collections = client.get_collections().collections
     collection_names = [c.name for c in collections]
     
-    if QDRANT_COLLECTION not in collection_names:
-        # Get embedding dimension by creating a test embedding
+    if collection_name not in collection_names:
         embeddings = get_embeddings()
         test_embedding = embeddings.embed_query("test")
         embedding_dim = len(test_embedding)
         
         client.create_collection(
-            collection_name=QDRANT_COLLECTION,
+            collection_name=collection_name,
             vectors_config=qdrant_models.VectorParams(
                 size=embedding_dim,
                 distance=qdrant_models.Distance.COSINE
             )
         )
-        print(f"Created Qdrant collection '{QDRANT_COLLECTION}' with dimension {embedding_dim}")
+        print(f"Created Qdrant collection '{collection_name}' with dimension {embedding_dim}")
     return True
 
 
-def get_vector_store() -> Optional[QdrantVectorStore]:
-    """Get or create the vector store"""
+def get_vector_store(model_id: Optional[str] = None) -> Optional[QdrantVectorStore]:
+    """Get or create the vector store for a specific model or active model"""
     global _vector_store
     
-    if not RAG_ENABLED:
+    rag_settings = get_rag_settings(model_id)
+    if not rag_settings.enabled:
         return None
+    collection_name = rag_settings.collection
+    
+    # Check if we need a different collection than the cached one
+    if _vector_store is not None:
+        # If the collection changed, we need to create a new store
+        try:
+            current_collection = _vector_store.collection_name
+            if current_collection != collection_name:
+                _vector_store = None
+        except:
+            pass
     
     if _vector_store is None:
         try:
-            ensure_collection_exists()
+            ensure_collection_exists(model_id)
             embeddings = get_embeddings()
             _vector_store = QdrantVectorStore(
                 client=get_qdrant_client(),
-                collection_name=QDRANT_COLLECTION,
+                collection_name=collection_name,
                 embedding=embeddings,
             )
-            print(f"Connected to Qdrant vector store: {QDRANT_COLLECTION}")
+            print(f"Connected to Qdrant vector store: {collection_name}")
         except Exception as e:
             print(f"Error connecting to Qdrant: {e}")
             return None
@@ -107,12 +138,12 @@ def get_vector_store() -> Optional[QdrantVectorStore]:
     return _vector_store
 
 
-def retrieve_relevant_context(query: str, k: int = None) -> List[Document]:
+def retrieve_relevant_context(query: str, k: Optional[int] = None, model_id: Optional[str] = None) -> List[Document]:
     """Retrieve relevant documents for a query"""
     if k is None:
-        k = RAG_TOP_K
+        k = get_rag_settings(model_id).top_k
     
-    vector_store = get_vector_store()
+    vector_store = get_vector_store(model_id)
     if vector_store is None:
         return []
     
@@ -141,6 +172,7 @@ class AgentState(TypedDict):
     """State for the agent graph"""
     messages: Annotated[Sequence[BaseMessage], operator.add]
     context: Optional[str]  # Retrieved RAG context
+    model_config_id: Optional[str]  # Custom model ID for per-request config
 
 
 # Define tools
@@ -154,18 +186,65 @@ def get_datetime() -> str:
 @tool
 def search_knowledge_base(query: str) -> str:
     """Search the knowledge base for relevant information. Use this tool when you need to find specific information from the knowledge base documents."""
-    docs = retrieve_relevant_context(query, k=RAG_TOP_K)
+    docs = retrieve_relevant_context(query)
     if not docs:
         return "No relevant information found in the knowledge base."
     return format_context(docs)
 
 
-# List of available tools
-tools = [get_datetime, search_knowledge_base]
+# Registered tools that can be enabled on each custom model
+REGISTERED_TOOLS = {
+    get_datetime.name: get_datetime,
+    search_knowledge_base.name: search_knowledge_base,
+}
+
+
+def get_active_tools(model_id: Optional[str] = None) -> List[Tool]:
+    """Return the tool instances selected for a specific model or the active model."""
+    model = _get_model_for_request(model_id)
+    active_tool_names = model.tool_names
+    return [REGISTERED_TOOLS[name] for name in active_tool_names if name in REGISTERED_TOOLS]
 
 
 def create_ollama_llm():
-    """Create an Ollama LLM client using OpenAI-compatible API"""
+    """Create an Ollama LLM client using OpenAI-compatible API (default config)"""
+    return create_llm_for_model(None)
+
+
+def create_llm_for_model(model_id: Optional[str] = None) -> ChatOpenAI:
+    """Create an LLM client configured for a specific custom model or default.
+    
+    Uses per-model base_model and model_params if available.
+    Caches clients by configuration hash to avoid recreation.
+    """
+    global _llm_cache
+    
+    # Get model config
+    custom_model = _get_model_for_request(model_id)
+    
+    # Determine base model
+    base_model = custom_model.base_model if custom_model.base_model else os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud")
+    
+    # Get model params with safe defaults
+    model_params = custom_model.model_params if custom_model.model_params else {}
+    temperature = model_params.get("temperature", 0.7)
+    max_tokens = model_params.get("max_tokens", None)
+    top_p = model_params.get("top_p", None)
+    
+    # Create cache key from config
+    cache_key_data = {
+        "base_model": base_model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "top_p": top_p,
+    }
+    cache_key = hashlib.md5(json.dumps(cache_key_data, sort_keys=True).encode()).hexdigest()
+    
+    # Return cached client if available
+    if cache_key in _llm_cache:
+        return _llm_cache[cache_key]
+    
+    # Create new client
     base_url = os.getenv("OLLAMA_API_BASE_URL", "http://localhost:11434")
     api_key = os.getenv("OLLAMA_API_KEY", "ollama")
     
@@ -173,24 +252,37 @@ def create_ollama_llm():
     if not base_url.endswith("/v1"):
         base_url = base_url.rstrip("/") + "/v1"
     
-    # Create custom HTTP client with Authorization header for Ollama Cloud
+    # Create custom HTTP client with Authorization header
     http_client = httpx.Client(
         headers={"Authorization": f"Bearer {api_key}"},
         timeout=120.0
     )
     
-    return ChatOpenAI(
-        model=os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud"),
-        api_key=api_key,
-        base_url=base_url,
-        temperature=0.7,
-        http_client=http_client,
-    )
+    # Build kwargs for ChatOpenAI
+    llm_kwargs: Dict[str, Any] = {
+        "model": base_model,
+        "api_key": api_key,
+        "base_url": base_url,
+        "temperature": temperature,
+        "http_client": http_client,
+    }
+    if max_tokens:
+        llm_kwargs["max_tokens"] = max_tokens
+    if top_p:
+        llm_kwargs["top_p"] = top_p
+    
+    llm = ChatOpenAI(**llm_kwargs)
+    
+    # Cache and return
+    _llm_cache[cache_key] = llm
+    return llm
 
 
 def retrieval_node(state: AgentState) -> dict:
     """Node that retrieves relevant context from the knowledge base"""
-    if not RAG_ENABLED:
+    model_id = state.get("model_config_id")
+    
+    if not is_rag_enabled(model_id):
         return {"context": None}
     
     messages = state["messages"]
@@ -205,8 +297,8 @@ def retrieval_node(state: AgentState) -> dict:
     if not last_human_msg:
         return {"context": None}
     
-    # Retrieve relevant documents
-    docs = retrieve_relevant_context(last_human_msg)
+    # Retrieve relevant documents using model-specific settings
+    docs = retrieve_relevant_context(last_human_msg, model_id=model_id)
     context = format_context(docs)
     
     return {"context": context}
@@ -214,8 +306,9 @@ def retrieval_node(state: AgentState) -> dict:
 
 def agent_node(state: AgentState) -> dict:
     """Node that handles chat interactions with tool binding and RAG context"""
-    llm = create_ollama_llm()
-    llm_with_tools = llm.bind_tools(tools)
+    model_id = state.get("model_config_id")
+    llm = create_llm_for_model(model_id)
+    llm_with_tools = llm.bind_tools(get_active_tools(model_id))
     messages = list(state["messages"])
     
     # If we have RAG context, inject it into the system message
@@ -245,13 +338,15 @@ Use this context to help answer the user's question. If the context is not relev
 
 def tool_node(state: AgentState) -> dict:
     """Node that executes tools"""
+    model_id = state.get("model_config_id")
     messages = state["messages"]
     last_message = messages[-1]
     
     tool_messages = []
     
     # Create a mapping of tool names to tool functions
-    tool_map = {t.name: t for t in tools}
+    active_tools = get_active_tools(model_id)
+    tool_map = {t.name: t for t in active_tools}
     
     # Execute each tool call
     for tool_call in last_message.tool_calls:
@@ -382,27 +477,29 @@ def clear_knowledge_base() -> dict:
     """Clear all documents from the knowledge base"""
     client = get_qdrant_client()
     try:
-        client.delete_collection(collection_name=QDRANT_COLLECTION)
+        collection_name = get_rag_settings().collection
+        client.delete_collection(collection_name=collection_name)
         # Reset global vector store to force re-creation
         global _vector_store
         _vector_store = None
         ensure_collection_exists()
-        return {"status": "success", "message": f"Collection '{QDRANT_COLLECTION}' cleared"}
+        return {"status": "success", "message": f"Collection '{collection_name}' cleared"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 
 def get_kb_stats() -> dict:
     """Get statistics about the knowledge base"""
-    if not RAG_ENABLED:
+    rag_settings = get_rag_settings()
+    if not rag_settings.enabled:
         return {"enabled": False, "document_count": 0}
     
     try:
         client = get_qdrant_client()
-        collection_info = client.get_collection(collection_name=QDRANT_COLLECTION)
+        collection_info = client.get_collection(collection_name=rag_settings.collection)
         return {
             "enabled": True,
-            "collection": QDRANT_COLLECTION,
+            "collection": rag_settings.collection,
             "document_count": collection_info.points_count,
             "status": collection_info.status.value,
             "qdrant_host": QDRANT_HOST,

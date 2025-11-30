@@ -1,0 +1,106 @@
+{
+  "active_model_id": "default",
+  "active_model_ids": [
+    "default",
+    "78d78a86-55b2-4df6-9a78-5315bcfe9f77"
+  ],
+  "models": {
+    "default": {
+      "id": "default",
+      "name": "default-model",
+      "version": "1.1.0",
+      "enabled": true,
+      "rag_settings": {
+        "enabled": true,
+        "top_k": 3,
+        "collection": "knowledge_base"
+      },
+      "tool_names": [
+        "get_datetime",
+        "search_knowledge_base"
+      ],
+      "base_model": null,
+      "model_params": {},
+      "created_at": "2025-11-30T00:00:00Z",
+      "updated_at": "2025-11-30T04:49:11.279182Z",
+      "version_history": {
+        "1.0.0": {
+          "version": "1.0.0",
+          "enabled": true,
+          "rag_settings": {
+            "enabled": true,
+            "top_k": 3,
+            "collection": "knowledge_base"
+          },
+          "tool_names": [
+            "get_datetime",
+            "search_knowledge_base"
+          ],
+          "base_model": null,
+          "model_params": {},
+          "created_at": "2025-11-30T00:00:00Z",
+          "description": "Initial version"
+        },
+        "1.1.0": {
+          "version": "1.1.0",
+          "enabled": false,
+          "rag_settings": {
+            "enabled": true,
+            "top_k": 3,
+            "collection": "knowledge_base"
+          },
+          "tool_names": [
+            "get_datetime",
+            "search_knowledge_base"
+          ],
+          "base_model": null,
+          "model_params": {},
+          "created_at": "2025-11-30T04:31:14.278917Z",
+          "description": "Added new features"
+        }
+      },
+      "active_versions": [
+        "1.0.0"
+      ]
+    },
+    "78d78a86-55b2-4df6-9a78-5315bcfe9f77": {
+      "id": "78d78a86-55b2-4df6-9a78-5315bcfe9f77",
+      "name": "example-model",
+      "version": "1.0.0",
+      "enabled": true,
+      "rag_settings": {
+        "enabled": true,
+        "top_k": 3,
+        "collection": "knowledge_base"
+      },
+      "tool_names": [
+        "search_knowledge_base"
+      ],
+      "base_model": null,
+      "model_params": {},
+      "created_at": "2025-11-30T00:00:00Z",
+      "updated_at": "2025-11-30T05:00:45.823189Z",
+      "version_history": {
+        "1.0.0": {
+          "version": "1.0.0",
+          "enabled": true,
+          "rag_settings": {
+            "enabled": true,
+            "top_k": 3,
+            "collection": "knowledge_base"
+          },
+          "tool_names": [
+            "get_datetime"
+          ],
+          "base_model": null,
+          "model_params": {},
+          "created_at": "2025-11-30T00:00:00Z",
+          "description": "Initial version"
+        }
+      },
+      "active_versions": [
+        "1.0.0"
+      ]
+    }
+  }
+}

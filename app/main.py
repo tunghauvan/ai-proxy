@@ -21,6 +21,7 @@ os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGSMITH_API_KEY", "")
 
 DEFAULT_MODEL = os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud")
 
+from app.config import AVAILABLE_TOOL_NAMES, CustomModel, RagSettings, ModelVersionConfig, get_config_store, parse_model_identifier
 from app.graph import (
     graph,
     create_ollama_llm,
@@ -48,7 +49,7 @@ async def lifespan(app: FastAPI):
         kb_stats = get_kb_stats()
         print(f"RAG enabled with {kb_stats.get('document_count', 0)} documents")
     else:
-        print("RAG is disabled (set RAG_ENABLED=true to enable)")
+        print("RAG is disabled according to the active custom model configuration.")
     
     yield
     print("Shutting down LangGraph Proxy Server...")
@@ -118,6 +119,104 @@ class ModelListResponse(BaseModel):
     data: List[ModelInfo]
 
 
+class CustomModelCreateRequest(BaseModel):
+    name: str = Field(..., description="Model name (a-z, 0-9, _, -). Must start with letter.")
+    version: Optional[str] = Field(default="1.0.0", description="Semantic version (e.g., 1.0.0)")
+    enabled: Optional[bool] = True
+    rag_settings: Optional[RagSettings] = None
+    tool_names: Optional[List[str]] = None
+    base_model: Optional[str] = None
+    model_params: Optional[dict] = None
+
+
+class CustomModelUpdateRequest(BaseModel):
+    """Request to update an existing custom model. All fields optional."""
+    name: Optional[str] = Field(None, description="Model name (a-z, 0-9, _, -). Must start with letter.")
+    version: Optional[str] = Field(None, description="Semantic version (e.g., 1.0.0)")
+    enabled: Optional[bool] = None
+    rag_settings: Optional[RagSettings] = None
+    tool_names: Optional[List[str]] = None
+    base_model: Optional[str] = None
+    model_params: Optional[dict] = None
+
+
+class CreateVersionRequest(BaseModel):
+    """Request to create a new version for a model."""
+    version: str = Field(..., description="Semantic version (e.g., 2.0.0). Must be greater than current version.")
+    enabled: Optional[bool] = True
+    rag_settings: Optional[RagSettings] = None
+    tool_names: Optional[List[str]] = None
+    base_model: Optional[str] = None
+    model_params: Optional[dict] = None
+    description: Optional[str] = Field(None, description="Version description/changelog")
+
+
+class VersionResponse(BaseModel):
+    """Response for a model version."""
+    version: str
+    enabled: bool
+    rag_settings: RagSettings
+    tool_names: List[str]
+    base_model: Optional[str]
+    model_params: dict
+    created_at: Optional[str]
+    description: Optional[str]
+    active: bool  # Whether this version is active for client use
+
+
+class CustomModelResponse(BaseModel):
+    id: str
+    name: str
+    version: str
+    enabled: bool
+    rag_settings: RagSettings
+    tool_names: List[str]
+    base_model: Optional[str]
+    model_params: dict
+    active: bool
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    active_versions: List[str] = []  # List of active version strings
+    version_count: int = 0  # Total number of versions
+
+
+class ToolListResponse(BaseModel):
+    tools: List[str]
+
+
+def _build_model_response(model: CustomModel, active_model_ids: list[str]) -> CustomModelResponse:
+    active_set = set(active_model_ids)
+    return CustomModelResponse(
+        id=model.id,
+        name=model.name,
+        version=model.version,
+        enabled=model.enabled,
+        rag_settings=model.rag_settings,
+        tool_names=model.tool_names,
+        base_model=model.base_model,
+        model_params=model.model_params,
+        active=model.id in active_set,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        active_versions=model.active_versions,
+        version_count=len(model.version_history),
+    )
+
+
+def _build_version_response(version_config: ModelVersionConfig, active_versions: List[str]) -> VersionResponse:
+    return VersionResponse(
+        version=version_config.version,
+        enabled=version_config.enabled,
+        rag_settings=version_config.rag_settings,
+        tool_names=version_config.tool_names,
+        base_model=version_config.base_model,
+        model_params=version_config.model_params,
+        created_at=version_config.created_at,
+        description=version_config.description,
+        active=version_config.version in active_versions,
+    )
+
+
 @app.get("/")
 async def root():
     """Root endpoint"""
@@ -137,9 +236,189 @@ async def rag_stats():
         return {
             "enabled": False,
             "document_count": 0,
-            "message": "RAG is disabled (RAG_ENABLED=false). Enable it to see stats.",
+            "message": "RAG is disabled for the active model. Enable a model with RAG turned on via /v1/admin/models.",
         }
     return get_kb_stats()
+
+
+@app.get("/v1/admin/models", response_model=List[CustomModelResponse])
+async def list_admin_models():
+    """List the saved custom models"""
+    store = get_config_store()
+    active_ids = store.active_model_ids
+    return [_build_model_response(m, active_ids) for m in store.list_models()]
+
+
+@app.post("/v1/admin/models", response_model=CustomModelResponse, status_code=201)
+async def create_admin_model(request: CustomModelCreateRequest):
+    """Create a new custom model configuration"""
+    store = get_config_store()
+    try:
+        model = store.create_model(
+            name=request.name,
+            enabled=request.enabled if request.enabled is not None else True,
+            rag_settings=request.rag_settings,
+            tool_names=request.tool_names,
+            base_model=request.base_model,
+            model_params=request.model_params,
+            version=request.version or "1.0.0",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _build_model_response(model, store.active_model_ids)
+
+
+@app.post("/v1/admin/models/{model_id}/activate", response_model=CustomModelResponse)
+async def activate_admin_model(model_id: str):
+    """Activate a saved custom model"""
+    store = get_config_store()
+    try:
+        model = store.activate_model(model_id)
+        reload_knowledge_base()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return _build_model_response(model, store.active_model_ids)
+
+
+@app.post("/v1/admin/models/{model_id}/deactivate", response_model=CustomModelResponse)
+async def deactivate_admin_model(model_id: str):
+    """Deactivate a saved custom model"""
+    store = get_config_store()
+    try:
+        model = store.remove_active_model(model_id)
+        reload_knowledge_base()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _build_model_response(model, store.active_model_ids)
+
+
+@app.get("/v1/admin/models/{model_id}", response_model=CustomModelResponse)
+async def get_admin_model(model_id: str):
+    """Get a single custom model by ID"""
+    store = get_config_store()
+    model = store.get_model(model_id)
+    if not model:
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found.")
+    return _build_model_response(model, store.active_model_ids)
+
+
+@app.put("/v1/admin/models/{model_id}", response_model=CustomModelResponse)
+async def update_admin_model(model_id: str, request: CustomModelUpdateRequest):
+    """Update an existing custom model"""
+    store = get_config_store()
+    try:
+        model = store.update_model(
+            model_id=model_id,
+            name=request.name,
+            version=request.version,
+            enabled=request.enabled,
+            rag_settings=request.rag_settings,
+            tool_names=request.tool_names,
+            base_model=request.base_model,
+            model_params=request.model_params,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _build_model_response(model, store.active_model_ids)
+
+
+@app.delete("/v1/admin/models/{model_id}", status_code=204)
+async def delete_admin_model(model_id: str):
+    """Delete a custom model by ID"""
+    store = get_config_store()
+    try:
+        store.delete_model(model_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return None
+
+
+# ========== VERSION MANAGEMENT ENDPOINTS ==========
+
+@app.get("/v1/admin/models/{model_id}/versions", response_model=List[VersionResponse])
+async def list_model_versions(model_id: str):
+    """List all versions of a model"""
+    store = get_config_store()
+    try:
+        versions = store.get_version_history(model_id)
+        model = store.get_model(model_id)
+        return [_build_version_response(v, model.active_versions) for v in versions]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/v1/admin/models/{model_id}/versions", response_model=VersionResponse, status_code=201)
+async def create_model_version(model_id: str, request: CreateVersionRequest):
+    """Create a new version for a model"""
+    store = get_config_store()
+    try:
+        model, version_config = store.create_model_version(
+            model_id=model_id,
+            version=request.version,
+            enabled=request.enabled if request.enabled is not None else True,
+            rag_settings=request.rag_settings,
+            tool_names=request.tool_names,
+            base_model=request.base_model,
+            model_params=request.model_params,
+            description=request.description,
+        )
+        return _build_version_response(version_config, model.active_versions)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/v1/admin/models/{model_id}/versions/{version}", response_model=VersionResponse)
+async def get_model_version(model_id: str, version: str):
+    """Get a specific version of a model"""
+    store = get_config_store()
+    try:
+        version_config = store.get_version(model_id, version)
+        model = store.get_model(model_id)
+        return _build_version_response(version_config, model.active_versions)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/v1/admin/models/{model_id}/versions/{version}/activate", response_model=VersionResponse)
+async def activate_model_version(model_id: str, version: str):
+    """Activate a specific version for client use"""
+    store = get_config_store()
+    try:
+        model, version_config = store.activate_model_version(model_id, version)
+        reload_knowledge_base()
+        return _build_version_response(version_config, model.active_versions)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/v1/admin/models/{model_id}/versions/{version}/deactivate", response_model=VersionResponse)
+async def deactivate_model_version(model_id: str, version: str):
+    """Deactivate a specific version (clients can't use it)"""
+    store = get_config_store()
+    try:
+        model, version_config = store.deactivate_model_version(model_id, version)
+        reload_knowledge_base()
+        return _build_version_response(version_config, model.active_versions)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/v1/admin/tools", response_model=ToolListResponse)
+async def list_admin_tools():
+    """Return the tool names that can be assigned to custom models"""
+    return ToolListResponse(tools=AVAILABLE_TOOL_NAMES)
 
 
 @app.post("/v1/rag/reload")
@@ -272,14 +551,55 @@ def ensure_rag_enabled():
     if not is_rag_enabled():
         raise HTTPException(
             status_code=503,
-            detail="RAG features are disabled (RAG_ENABLED=false). Set RAG_ENABLED=true to enable.",
+            detail="RAG features are disabled for the active model. Activate a model with RAG enabled via /v1/admin/models.",
         )
 
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
-    """Chat completions endpoint - OpenAI compatible"""
+    """Chat completions endpoint - OpenAI compatible
+    
+    Supports model identifiers in formats:
+    - "model-name" - uses the latest active version
+    - "model-name@1.0.0" - uses a specific version
+    """
     try:
+        # Check if request.model matches a custom model name (with optional version)
+        model_config_id = None
+        store = get_config_store()
+        
+        # Parse model identifier (may include version)
+        model_name, requested_version = parse_model_identifier(request.model)
+        
+        # Try to resolve the model
+        result = store.resolve_model_identifier(request.model)
+        
+        if result:
+            model, version_config = result
+            
+            # Check if model is enabled
+            if not model.enabled:
+                raise HTTPException(status_code=400, detail=f"Model '{model_name}' is disabled.")
+            
+            # If a specific version was requested, verify it's active
+            if requested_version and version_config:
+                if requested_version not in model.active_versions:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Version '{requested_version}' of model '{model_name}' is not active. "
+                               f"Active versions: {', '.join(model.active_versions)}"
+                    )
+            
+            model_config_id = model.id
+        else:
+            # Check if it's a direct model ID (without version)
+            direct_model = store.get_model(model_name)
+            if direct_model:
+                if not direct_model.enabled:
+                    raise HTTPException(status_code=400, detail=f"Model '{model_name}' is disabled.")
+                model_config_id = direct_model.id
+            # Otherwise, use default LLM (no custom model config)
+        
         # Convert OpenAI messages to LangChain messages
         langchain_messages = []
         for msg in request.messages:
@@ -291,8 +611,11 @@ async def chat_completions(request: ChatCompletionRequest):
                 from langchain_core.messages import AIMessage
                 langchain_messages.append(AIMessage(content=msg.content))
         
-        # Run the graph
-        result = graph.invoke({"messages": langchain_messages})
+        # Run the graph with model_config_id for per-request settings
+        result = graph.invoke({
+            "messages": langchain_messages,
+            "model_config_id": model_config_id
+        })
         
         # Get the last AI message
         response_message = result["messages"][-1]
@@ -319,6 +642,8 @@ async def chat_completions(request: ChatCompletionRequest):
                 total_tokens=prompt_tokens + completion_tokens,
             ),
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

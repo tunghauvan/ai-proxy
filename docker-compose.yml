@@ -29,6 +29,7 @@ services:
       - QDRANT_PORT=6333
     volumes:
       - ./knowledge_base:/app/knowledge_base:ro
+      - ./config:/app/config
     depends_on:
       qdrant:
         condition: service_healthy
@@ -39,6 +40,18 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+  admin-ui:
+    build:
+      context: ./admin-ui
+      dockerfile: Dockerfile
+    image: admin-ui:latest
+    container_name: admin-ui
+    ports:
+      - "3000:80"
+    depends_on:
+      - langchain-proxy
+    restart: unless-stopped
 
 volumes:
   qdrant_data:

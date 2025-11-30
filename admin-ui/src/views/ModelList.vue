@@ -13,12 +13,17 @@ interface RagSettings {
 interface Model {
   id: string
   name: string
+  version?: string
   active: boolean
   enabled: boolean
   base_model?: string
   rag_settings?: RagSettings | null
   tool_names?: string[]
   model_params?: Record<string, any> | null
+  created_at?: string
+  updated_at?: string
+  active_versions?: string[]
+  version_count?: number
 }
 
 const store = useModelsStore()
@@ -81,6 +86,21 @@ function formatRagSettings(rag: RagSettings | null | undefined): string {
 function formatTools(tools: string[] | null | undefined): string {
   if (!tools || tools.length === 0) return 'None'
   return tools.join(', ')
+}
+
+function formatDate(dateStr: string | undefined | null): string {
+  if (!dateStr) return '-'
+  try {
+    return new Date(dateStr).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  } catch {
+    return dateStr
+  }
 }
 
 // Actions
@@ -151,7 +171,7 @@ const filteredModels = computed(() => {
 })
 
 const selectedColumnsCount = computed(() => Object.values(selectedColumns.value).filter(Boolean).length)
-const tableColspan = computed(() => 2 + selectedColumnsCount.value)
+const tableColspan = computed(() => 3 + selectedColumnsCount.value)
 
 onMounted(() => {
   store.fetchModels()
@@ -206,7 +226,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-if="displayedError" class="alert" role="alert">{{ displayedError }}</div>
+    <div v-if="displayedError" class="error-message" role="alert">{{ displayedError }}</div>
 
     <div v-if="store.loading" class="loading-indicator" aria-live="polite"><span class="spinner" aria-hidden="true"></span> Loading models...</div>
 
@@ -230,7 +250,7 @@ onMounted(() => {
         </div>
 
         <footer class="card-actions">
-          <router-link :to="`/edit/${model.id}`" class="icon-button icon-button-secondary" aria-label="Edit model"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 11.5v1.5h1.5l6-6-1.5-1.5-6 6z" /><path d="M10.75 4l1.25 1.25" /></svg><span class="sr-only">Edit</span></router-link>
+          <router-link :to="`/models/${model.id}`" class="icon-button icon-button-secondary" aria-label="View model details" title="View Details"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3l6 5-6 5" /></svg><span class="sr-only">View</span></router-link>
 
           <button v-if="!model.active" class="icon-button icon-button-success" :disabled="activationLoading === model.id" @click="onActivate(model)" type="button" aria-label="Activate model">
             <span v-if="activationLoading === model.id" class="spinner-small" aria-hidden="true"></span>
@@ -267,20 +287,22 @@ onMounted(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="model in filteredModels" :key="model.id">
-            <td>{{ model.name }}</td>
-            <td><span :class="['status-badge', getStatusClass(model)]">{{ getStatusLabel(model) }}</span></td>
-            <td v-if="selectedColumns.base">{{ model.base_model || 'Default' }}</td>
-            <td v-if="selectedColumns.rag">{{ formatRagSettings(model.rag_settings) }}</td>
-            <td v-if="selectedColumns.tools">{{ formatTools(model.tool_names) }}</td>
-            <td v-if="selectedColumns.params">{{ formatParams(model.model_params) }}</td>
-            <td class="actions-cell">
-              <router-link :to="`/edit/${model.id}`" class="icon-button icon-button-secondary" aria-label="Edit model"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 11.5v1.5h1.5l6-6-1.5-1.5-6 6z" /><path d="M10.75 4l1.25 1.25" /></svg></router-link>
-              <button v-if="!model.active" class="icon-button icon-button-success" :disabled="activationLoading === model.id" @click="onActivate(model)" type="button" aria-label="Activate model"><svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 4v8" /><path d="M4 8h8" /></svg></button>
-              <button v-else class="icon-button icon-button-warning" :disabled="deactivationLoading === model.id" @click="onDeactivate(model)" type="button" aria-label="Deactivate model"><svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 8h8" /></svg></button>
-              <button class="icon-button icon-button-danger" :disabled="deleteLoading === model.id" @click="onDelete(model)" type="button" aria-label="Delete model"><svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5h8" /><path d="M6.5 5V3.5h3V5" /><path d="M5.5 7v6" /><path d="M10.5 7v6" /></svg></button>
-            </td>
-          </tr>
+          <template v-for="model in filteredModels" :key="model.id">
+            <tr>
+              <td>{{ model.name }}</td>
+              <td><span :class="['status-badge', getStatusClass(model)]">{{ getStatusLabel(model) }}</span></td>
+              <td v-if="selectedColumns.base">{{ model.base_model || 'Default' }}</td>
+              <td v-if="selectedColumns.rag">{{ formatRagSettings(model.rag_settings) }}</td>
+              <td v-if="selectedColumns.tools">{{ formatTools(model.tool_names) }}</td>
+              <td v-if="selectedColumns.params">{{ formatParams(model.model_params) }}</td>
+              <td class="actions-cell">
+                <router-link :to="`/models/${model.id}`" class="icon-button icon-button-secondary" aria-label="View model details" title="View Details"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3l6 5-6 5" /></svg></router-link>
+                <button v-if="!model.active" class="icon-button icon-button-success" :disabled="activationLoading === model.id" @click="onActivate(model)" type="button" aria-label="Activate model"><span v-if="activationLoading === model.id" class="spinner-small" aria-hidden="true"></span><svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 4v8" /><path d="M4 8h8" /></svg></button>
+                <button v-else class="icon-button icon-button-warning" :disabled="deactivationLoading === model.id" @click="onDeactivate(model)" type="button" aria-label="Deactivate model"><span v-if="deactivationLoading === model.id" class="spinner-small" aria-hidden="true"></span><svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 8h8" /></svg></button>
+                <button class="icon-button icon-button-danger" :disabled="deleteLoading === model.id" @click="onDelete(model)" type="button" aria-label="Delete model"><span v-if="deleteLoading === model.id" class="spinner-small" aria-hidden="true"></span><svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 5h8" /><path d="M6.5 5V3.5h3V5" /><path d="M5.5 7v6" /><path d="M10.5 7v6" /></svg></button>
+              </td>
+            </tr>
+          </template>
           <tr v-if="filteredModels.length === 0">
             <td :colspan="tableColspan" class="empty-state">No models found.</td>
           </tr>
@@ -291,304 +313,223 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* Full width layout — use more horizontal space and reduce side padding */
-.model-list.full-width { width: 100%; padding: 0.75rem 0.75rem; margin: 0; max-width: none; }
-.page-header { display:flex; justify-content:space-between; align-items:flex-start; gap:0.75rem; padding: 0 0.5rem }
-.page-header h1 { margin:0; font-size:1.4rem }
-.subtitle { margin:4px 0 0; color:#6c757d; font-size:0.88rem }
+/* Full width layout */
+.model-list.full-width { width: 100%; padding: 1.25rem; }
 
-.toolbar { display:flex; justify-content:space-between; gap:0.5rem; align-items:center; flex-wrap:wrap; padding: 0 0.5rem }
-.tools-left { display:flex; gap:0.5rem; align-items:center; flex: 1; }
+.toolbar { display:flex; justify-content:space-between; gap:1rem; align-items:center; flex-wrap:wrap; margin-bottom: 1.5rem; }
+.tools-left { display:flex; gap:0.75rem; align-items:center }
 .tools-right { display:flex; gap:0.5rem; align-items:center }
-.form-input { padding:0.4rem 0.6rem; border:1px solid #ced4da; border-radius:6px; min-width: 220px }
-.form-select { padding:0.35rem 0.5rem; border:1px solid #ced4da; border-radius:6px }
 
-/* tighter grid and reduced card padding to fit more content horizontally */
-.card-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:0.75rem }
-.model-card { background:#fff; border:1px solid #e6e9ee; border-radius:8px; display:flex; flex-direction:column; overflow:hidden }
-.card-header { display:flex; justify-content:space-between; align-items:center; padding:0.6rem 0.75rem; border-bottom:1px solid #f1f5f9 }
-.card-body{ padding:0.6rem 0.75rem }
-.card-actions{ display:flex; gap:0.4rem; justify-content:flex-end; padding:0.5rem 0.75rem; background:#fafbfc }
-.model-name{ margin:0; font-weight:600 }
-.model-meta{ font-size:0.82rem; color:#6b7280 }
-.status-badge{ padding:0.12rem 0.45rem; border-radius:999px; font-weight:600; font-size:0.72rem }
-
-/* use denser table spacing */
-.model-table{ width:100%; border-collapse:collapse; background:#fff; border:1px solid #e6e9ee; border-radius:6px; overflow:hidden }
-.model-table th,.model-table td{ padding:0.45rem 0.6rem; border-bottom:1px solid #eef2f6 }
-.model-table th{ background:#f7fafc; text-align:left; font-size:0.86rem }
-.actions-cell{ display:flex; gap:0.4rem; justify-content:flex-end }
-
-.icon-button{ width:32px; height:32px; border-radius:6px; display:inline-flex; align-items:center; justify-content:center; border:none; background:#fff }
-.icon-button svg{ width:14px; height:14px }
-.icon-button-success{ background:#e6f5ec; color:#0f9d58 }
-.icon-button-warning{ background:#fff4e6; color:#c2410c }
-.icon-button-danger{ background:#fee2e2; color:#bb1e1e }
-
-.btn-primary{ background:#212529; color:#fff; padding:0.45rem 0.75rem; border-radius:6px }
-.btn-secondary{ background:#eef2f6; padding:0.35rem 0.6rem; border-radius:6px }
-
-.empty-state{ padding:0.9rem; text-align:center; color:#6b7280 }
-.alert{ background:#fcebea; color:#9f3a38; padding:0.6rem; border-radius:6px }
-.loading-indicator{ padding:0.6rem; border:1px solid #eef2f6; border-radius:6px; display:flex; gap:0.5rem; align-items:center }
-.spinner{ width:14px; height:14px; border:2px solid #e6e9ee; border-top-color:#212529; border-radius:50%; animation:spin 0.8s linear infinite }
-.spinner-small{ width:10px; height:10px; border:2px solid transparent; border-top-color:currentColor; border-radius:50%; animation:spin 0.8s linear infinite }
-
-.sr-only{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0 }
-
-@keyframes spin{ to{ transform:rotate(360deg) } }
-
-@media (max-width:720px){ .tools-left{ flex-direction:column; align-items:flex-start; gap:0.5rem } .actions-cell{ justify-content:flex-start } }
-</style>
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  font-weight: 500;
-  text-transform: uppercase;
-}
-
-.status-active {
-  background: #dcfce7;
-  color: #16a34a;
-}
-
-.status-enabled {
-  background: #dbeafe;
-  color: #2563eb;
-}
-
-.status-disabled {
-  background: #f3f4f6;
-  color: #6b7280;
-}
-
-.card-body {
-  padding: 1rem;
-}
-
-.model-details {
-  margin: 0;
-}
-
-.detail-row {
+/* View Toggle */
+.view-toggle {
   display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid #f3f4f6;
-}
-
-.detail-row:last-child {
-  border-bottom: none;
-}
-
-.detail-row dt {
-  font-weight: 500;
-  color: #6b7280;
-  min-width: 100px;
-  font-size: 0.875rem;
-}
-
-.detail-row dd {
-  margin: 0;
-  color: #111827;
-  font-size: 0.875rem;
-  word-break: break-word;
-}
-
-.card-actions {
-  display: flex;
-  gap: 0.5rem;
-  padding: 1rem;
-  background: #f9fafb;
-  border-top: 1px solid #e5e7eb;
-  flex-wrap: wrap;
-}
-
-/* Table */
-.table-container {
-  overflow-x: auto;
-}
-
-.model-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.model-table th,
-.model-table td {
-  padding: 0.75rem 1rem;
-  text-align: left;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-.model-table th {
-  background: #f9fafb;
-  font-weight: 600;
-  font-size: 0.875rem;
-  color: #374151;
-}
-
-.model-table td {
-  font-size: 0.875rem;
-  color: #111827;
-}
-
-.model-table tbody tr:hover {
-  background: #f9fafb;
-}
-
-.actions-cell {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-/* Buttons */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.5rem 1rem;
-  border: none;
+  background: #e9ecef;
+  padding: 0.25rem;
   border-radius: 6px;
+  gap: 0.25rem;
+}
+
+.view-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.75rem;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
   font-size: 0.875rem;
   font-weight: 500;
+  color: #6c757d;
   cursor: pointer;
-  text-decoration: none;
-  transition: background-color 0.2s, opacity 0.2s;
+  transition: all 0.15s;
 }
 
-.btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.icon-button {
-  width: 38px;
-  height: 38px;
-  border: none;
-  border-radius: 10px;
-  background: #f3f4f6;
-  color: #374151;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  cursor: pointer;
-  transition: background-color 0.2s, color 0.2s;
-  text-decoration: none;
-}
-
-.icon-button svg {
-  width: 18px;
-  height: 18px;
-}
-
-.icon-button:hover:not(:disabled) {
-  background: #e5e7eb;
-}
-
-.icon-button:focus-visible {
-  outline: 2px solid #111827;
-  outline-offset: 2px;
-}
-
-.icon-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.icon-button-secondary {
-  background: #fff;
-  color: #374151;
-}
-
-.icon-button-success {
-  background: #e6f5ec;
-  color: #0f9d58;
-}
-
-.icon-button-warning {
-  background: #fff4e6;
-  color: #a855f7;
-}
-
-.icon-button-danger {
-  background: #fee2e2;
-  color: #b91c1c;
-}
-
-.btn-small {
-  padding: 0.375rem 0.75rem;
-  font-size: 0.8125rem;
-}
-
-.btn-primary {
-  background: #007bff;
-  color: #fff;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: #0056b3;
-}
-
-.btn-secondary {
-  background: #6c757d;
-  color: #fff;
-}
-
-.btn-secondary:hover:not(:disabled) {
-  background: #545b62;
-}
-
-.btn-success {
-  background: #28a745;
-  color: #fff;
-}
-
-.btn-success:hover:not(:disabled) {
-  background: #1e7e34;
-}
-
-.btn-warning {
-  background: #ffc107;
+.view-pill:hover {
   color: #212529;
 }
 
-.btn-warning:hover:not(:disabled) {
-  background: #d39e00;
+.view-pill.active {
+  background: #fff;
+  color: #212529;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
 }
 
-.btn-danger {
-  background: #dc3545;
-  color: #fff;
-}
+.view-icon { font-size: 1rem; line-height: 1; }
 
-.btn-danger:hover:not(:disabled) {
-  background: #bd2130;
+/* Column Selector */
+.column-selector { position: relative; }
+.dropdown-toggle {
+  background: #fff;
+  border: 1px solid #ced4da;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  cursor: pointer;
+  color: #495057;
 }
-
-/* Empty State */
-.empty-state {
-  text-align: center;
-  padding: 3rem;
-  color: #6b7280;
-  font-size: 1rem;
-}
-
-.sr-only {
+.dropdown-menu {
   position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
+  top: 100%;
+  left: 0;
+  margin-top: 0.25rem;
+  background: #fff;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  padding: 0.5rem;
+  z-index: 10;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.dropdown-item:hover { background: #f8f9fa; }
+
+/* Card Grid */
+.card-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:1.5rem }
+.model-card { background:#fff; border:1px solid #e9ecef; border-radius:8px; display:flex; flex-direction:column; overflow:hidden; transition: box-shadow 0.2s; }
+.model-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.05); border-color: #dee2e6; }
+
+.card-header { display:flex; justify-content:space-between; align-items:flex-start; padding:1.25rem; border-bottom:1px solid #f8f9fa }
+.card-body{ padding:1.25rem; flex: 1; }
+.card-actions{ display:flex; gap:0.5rem; justify-content:flex-end; padding:1rem 1.25rem; background:#f8f9fa; border-top: 1px solid #e9ecef; }
+
+.model-name{ margin:0 0 0.25rem 0; font-weight:600; font-size: 1.125rem; color: #212529; }
+.model-meta{ font-size:0.875rem; color:#6c757d }
+
+.model-details { display: flex; flex-direction: column; gap: 0.75rem; }
+.detail-row { display: flex; gap: 0.75rem; font-size: 0.875rem; border-bottom: 1px solid #f8f9fa; padding-bottom: 0.75rem; }
+.detail-row:last-child { border-bottom: none; padding-bottom: 0; }
+.detail-row dt { font-weight: 500; color: #6c757d; min-width: 80px; }
+.detail-row dd { margin: 0; color: #212529; word-break: break-word; }
+
+/* Version Badge */
+.version-badge {
+  display: inline-block;
+  background: #e3f2fd;
+  color: #1976d2;
+  padding: 0.125rem 0.5rem;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  margin-left: 0.5rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.version-badge:hover {
+  background: #bbdefb;
+}
+
+/* Version History Panel */
+.version-history-panel {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e9ecef;
+}
+.version-history-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #495057;
+  margin: 0 0 0.75rem 0;
+}
+.version-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.version-item {
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  padding: 0.75rem;
+}
+.version-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.version-number {
+  font-weight: 600;
+  color: #212529;
+}
+.version-status {
+  font-size: 0.75rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 10px;
+}
+.version-active {
+  background: #d4edda;
+  color: #155724;
+}
+.version-inactive {
+  background: #f8d7da;
+  color: #721c24;
+}
+/* Table */
+.table-container { overflow-x: auto; border: 1px solid #e9ecef; border-radius: 8px; }
+.model-table{ width:100%; border-collapse:collapse; background:#fff; }
+.model-table th,.model-table td{ padding:0.75rem 1rem; border-bottom:1px solid #e9ecef; text-align: left; font-size: 0.875rem; }
+.model-table th{ background:#f8f9fa; font-weight: 600; color: #495057; white-space: nowrap; }
+.model-table tr:last-child td { border-bottom: none; }
+.actions-cell{ display:flex; gap:0.5rem; justify-content:flex-end }
+
+/* Small buttons */
+.btn-sm {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: 4px;
+}
+.btn-success {
+  background: #28a745;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+}
+.btn-success:hover {
+  background: #218838;
+}
+.btn-success:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.btn-warning {
+  background: #ffc107;
+  color: #212529;
+  border: none;
+  cursor: pointer;
+}
+.btn-warning:hover {
+  background: #e0a800;
+}
+.btn-warning:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Icon button info */
+.icon-button-info {
+  color: #17a2b8;
+}
+.icon-button-info:hover {
+  background: rgba(23, 162, 184, 0.1);
+}
+
+.loading-indicator{ padding:2rem; text-align: center; color: #6c757d; display:flex; gap:0.75rem; align-items:center; justify-content: center; }
+.empty-state{ padding:3rem; text-align:center; color:#6c757d; background: #f8f9fa; border-radius: 8px; border: 1px dashed #ced4da; }
+
+@media (max-width:768px){ 
+  .tools-left{ flex-direction:column; align-items:stretch; gap:0.75rem; width: 100%; } 
+  .tools-right { width: 100%; justify-content: space-between; margin-top: 0.75rem; }
+  .search input { width: 100%; }
+  .actions-cell{ justify-content:flex-start } 
 }
 </style>
