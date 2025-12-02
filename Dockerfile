@@ -21,10 +21,6 @@ COPY src/ ./src/
 # Install the package in development mode
 RUN pip install -e .
 
-# Copy knowledge base and config
-COPY knowledge_base/ ./knowledge_base/
-COPY config/ ./config/
-
 # Create necessary directories
 RUN mkdir -p /app/logs /app/chroma_db
 
