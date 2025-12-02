@@ -70,6 +70,7 @@ const toggleSidebar = () => {
 
     <!-- Main content -->
     <div class="flex flex-1 flex-col overflow-hidden">
+      <!-- Mobile header -->
       <header class="flex h-16 items-center border-b bg-card px-6 lg:hidden">
         <button 
           type="button" 
@@ -79,6 +80,21 @@ const toggleSidebar = () => {
           <Menu class="h-6 w-6" />
         </button>
         <h1 class="ml-4 text-lg font-bold">LangChain Proxy</h1>
+      </header>
+
+      <!-- Desktop top bar -->
+      <header class="hidden lg:flex h-14 items-center justify-between border-b bg-card px-6">
+        <div class="flex items-center space-x-4">
+          <span class="text-sm text-muted-foreground">AI Proxy Admin Panel</span>
+        </div>
+        <div class="flex items-center space-x-4">
+          <div class="flex items-center space-x-2">
+            <span class="h-2 w-2 rounded-full bg-green-500"></span>
+            <span class="text-sm text-muted-foreground">Connected</span>
+          </div>
+          <div class="h-4 w-px bg-border"></div>
+          <span class="text-sm text-muted-foreground">v1.0.0</span>
+        </div>
       </header>
 
       <main class="flex-1 overflow-y-auto bg-background p-6">

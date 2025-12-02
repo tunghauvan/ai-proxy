@@ -844,6 +844,60 @@ async def delete_admin_tool(tool_id: str):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+class ToolTestRequest(BaseModel):
+    """Request body for testing a tool"""
+    pass  # Accept any JSON object as args
+
+
+@app.post("/v1/admin/tools/{tool_id}/test")
+async def test_admin_tool(tool_id: str, args: Dict[str, Any] = {}):
+    """Test a tool by executing it with provided arguments"""
+    tool_store = get_tool_store()
+    try:
+        tool = tool_store.get_tool(tool_id)
+        if not tool:
+            raise HTTPException(status_code=404, detail=f"Tool '{tool_id}' not found")
+        
+        # For built-in tools, execute the actual implementation
+        if tool.is_builtin:
+            if tool.name == "get_datetime":
+                from datetime import datetime
+                result = datetime.now().isoformat()
+            elif tool.name == "search_knowledge_base":
+                query = args.get("query", "test")
+                docs = retrieve_relevant_context(query, k=3)
+                result = [{"content": doc.page_content, "source": doc.metadata.get("source", "unknown")} for doc in docs]
+            else:
+                result = f"Built-in tool '{tool.name}' executed successfully"
+        else:
+            # For custom tools, execute the function_code
+            if not tool.function_code:
+                raise HTTPException(status_code=400, detail="Tool has no function code defined")
+            
+            # Execute the custom tool code
+            local_vars = {}
+            try:
+                exec(tool.function_code, {"__builtins__": __builtins__}, local_vars)
+                if "main" not in local_vars:
+                    raise HTTPException(status_code=400, detail="Tool code must define a 'main' function")
+                result = local_vars["main"](**args)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Tool execution error: {str(e)}")
+        
+        return {
+            "success": True,
+            "tool_name": tool.name,
+            "result": result,
+            "args": args
+        }
+    except HTTPException:
+        raise
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Test failed: {str(exc)}")
+
+
 @app.post("/v1/rag/reload")
 async def rag_reload(kb_id: Optional[str] = None):
     """Reload the RAG knowledge base"""

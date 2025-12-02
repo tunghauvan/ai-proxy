@@ -5,6 +5,7 @@ const Dashboard = () => import('../views/Dashboard.vue')
 const Models = () => import('../views/Models.vue')
 const ModelDetail = () => import('../views/ModelDetail.vue')
 const Tools = () => import('../views/Tools.vue')
+const ToolDetail = () => import('../views/ToolDetail.vue')
 const KnowledgeBase = () => import('../views/KnowledgeBase.vue')
 const Chat = () => import('../views/Chat.vue')
 const Logs = () => import('../views/Logs.vue')
@@ -14,6 +15,7 @@ const routes = [
   { path: '/models', component: Models, name: 'Models' },
   { path: '/models/:id', component: ModelDetail, name: 'ModelDetail' },
   { path: '/tools', component: Tools, name: 'Tools' },
+  { path: '/tools/:id', component: ToolDetail, name: 'ToolDetail' },
   { path: '/kb', component: KnowledgeBase, name: 'KnowledgeBase' },
   { path: '/chat', component: Chat, name: 'Chat' },
   { path: '/logs', component: Logs, name: 'Logs' },

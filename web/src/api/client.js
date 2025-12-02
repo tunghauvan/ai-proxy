@@ -22,7 +22,9 @@ export default {
   getTools: (detailed = true) => api.get(`/admin/tools/detailed`),
   getTool: (id) => api.get(`/admin/tools/${id}`),
   createTool: (data) => api.post('/admin/tools', data),
+  updateTool: (id, data) => api.put(`/admin/tools/${id}`, data),
   deleteTool: (id) => api.delete(`/admin/tools/${id}`),
+  testTool: (id, args) => api.post(`/admin/tools/${id}/test`, args),
 
   // Knowledge Base
   getKBs: () => api.get('/admin/knowledge-bases'),

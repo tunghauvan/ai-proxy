@@ -95,8 +95,9 @@ const fetchModel = async () => {
         chunk_size: model.value.rag_settings?.chunk_size || 1000,
         chunk_overlap: model.value.rag_settings?.chunk_overlap || 200,
         similarity_threshold: model.value.rag_settings?.similarity_threshold || 0.7,
-        max_documents: model.value.rag_settings?.max_documents || 5,
-        embedding_model: model.value.rag_settings?.embedding_model || 'text-embedding-ada-002'
+        max_documents: model.value.rag_settings?.top_k || 5,
+        embedding_model: model.value.rag_settings?.embedding_model || 'text-embedding-ada-002',
+        collection: model.value.rag_settings?.collection || 'knowledge_base'
       },
       tool_names: [...model.value.tool_names],
       tool_configs: model.value.tool_configs || {}
@@ -178,9 +179,13 @@ const saveModel = async () => {
       base_model: form.value.base_model,
       enabled: form.value.enabled,
       model_params: form.value.model_params,
-      rag_settings: form.value.rag_settings,
-      tool_names: form.value.tool_names,
-      tool_configs: form.value.tool_configs
+      rag_settings: {
+        enabled: form.value.rag_settings.enabled,
+        top_k: form.value.rag_settings.max_documents || 3,
+        collection: form.value.rag_settings.collection || 'knowledge_base'
+      },
+      tool_names: form.value.tool_names
+      // Remove tool_configs as it's not expected by the server
     }
 
     await api.updateModel(route.params.id, payload)

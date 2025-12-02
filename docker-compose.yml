@@ -55,6 +55,7 @@ services:
       - ./config:/app/config
       - ./logs:/app/logs
       - ./.env:/app/.env
+      - ./scripts:/app/scripts:ro
     depends_on:
       postgres:
         condition: service_healthy
