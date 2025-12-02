@@ -139,3 +139,11 @@ qdrant_storage/
 # Temporary files
 tmp/
 temp/
+
+# Frontend
+web/node_modules/
+web/dist/
+web/.env.local
+web/.env.development.local
+web/.env.test.local
+web/.env.production.local

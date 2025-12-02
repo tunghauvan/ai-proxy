@@ -1,7 +1,10 @@
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import api from '../api/client'
-import { Plus, Edit, Trash2, Power, PowerOff } from 'lucide-vue-next'
+import { Plus, Edit, Trash2, Power, PowerOff, Settings } from 'lucide-vue-next'
+
+const router = useRouter()
 
 const models = ref([])
 const loading = ref(true)
@@ -137,6 +140,10 @@ const toggleActive = async (model) => {
   }
 }
 
+const viewModelDetails = (model) => {
+  router.push(`/models/${model.id}`)
+}
+
 onMounted(() => {
   fetchModels()
   fetchTools()
@@ -201,6 +208,9 @@ onMounted(() => {
               </td>
               <td class="p-4 align-middle text-right">
                 <div class="flex justify-end gap-2">
+                  <button @click="viewModelDetails(model)" class="p-2 hover:bg-accent rounded-md" title="View Details">
+                    <Settings class="h-4 w-4" />
+                  </button>
                   <button @click="toggleActive(model)" class="p-2 hover:bg-accent rounded-md" :title="model.active ? 'Deactivate' : 'Activate'">
                     <PowerOff v-if="model.active" class="h-4 w-4" />
                     <Power v-else class="h-4 w-4" />

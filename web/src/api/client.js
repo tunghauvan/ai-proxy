@@ -16,6 +16,7 @@ export default {
   deleteModel: (id) => api.delete(`/admin/models/${id}`),
   activateModel: (id) => api.post(`/admin/models/${id}/activate`),
   deactivateModel: (id) => api.post(`/admin/models/${id}/deactivate`),
+  getBaseModels: () => api.get('/base-models'),
 
   // Tools
   getTools: (detailed = true) => api.get(`/admin/tools/detailed`),

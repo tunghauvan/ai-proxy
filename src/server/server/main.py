@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+import httpx
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, AIMessageChunk
 
 # Load environment variables
@@ -970,6 +971,9 @@ class ChatLogStats(BaseModel):
     avg_latency_ms: Optional[float]
     models_used: Dict[str, int]
     tools_used: Dict[str, int]
+    total_tokens: int
+    input_tokens: int
+    output_tokens: int
 
 
 @app.get("/v1/admin/logs")
@@ -1039,6 +1043,13 @@ async def get_chat_log_stats():
                 for tool in log.tools_used:
                     tools_used[tool] = tools_used.get(tool, 0) + 1
         
+        # Calculate total tokens
+        total_tokens = sum(log.total_tokens for log in all_logs if log.total_tokens)
+        
+        # Calculate input and output tokens
+        input_tokens = sum(log.prompt_tokens for log in all_logs if log.prompt_tokens)
+        output_tokens = sum(log.completion_tokens for log in all_logs if log.completion_tokens)
+        
         return ChatLogStats(
             total_logs=len(all_logs),
             success_count=success_count,
@@ -1047,6 +1058,9 @@ async def get_chat_log_stats():
             avg_latency_ms=avg_latency,
             models_used=models_used,
             tools_used=tools_used,
+            total_tokens=total_tokens,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1143,6 +1157,49 @@ async def list_models():
         )]
     
     return ModelListResponse(data=model_infos)
+
+
+@app.get("/v1/base-models")
+async def list_base_models():
+    """List available base models from Ollama"""
+    try:
+        # Get Ollama API configuration
+        base_url = os.getenv("OLLAMA_API_BASE_URL", "http://localhost:11434")
+        api_key = os.getenv("OLLAMA_API_KEY", "ollama")
+        
+        # Ensure base_url ends with /v1 for OpenAI compatibility, but we need the base for Ollama API
+        ollama_base = base_url.rstrip("/v1").rstrip("/")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{ollama_base}/api/tags",
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else {}
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            models = data.get("models", [])
+            
+            # Convert to OpenAI-compatible format
+            model_infos = []
+            for model in models:
+                model_infos.append(ModelInfo(
+                    id=model.get("name", ""),
+                    created=int(time.time()),
+                    owned_by="ollama"
+                ))
+            
+            return ModelListResponse(data=model_infos)
+            
+    except httpx.RequestError as e:
+        logger.error(f"Failed to connect to Ollama API: {e}")
+        raise HTTPException(status_code=503, detail=f"Unable to connect to Ollama API: {str(e)}")
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Ollama API returned error: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(status_code=503, detail=f"Ollama API error: {e.response.status_code}")
+    except Exception as e:
+        logger.error(f"Unexpected error fetching base models: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch base models: {str(e)}")
 
 
 def ensure_rag_enabled():

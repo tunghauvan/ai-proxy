@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import api from '../api/client'
-import { Activity, CheckCircle, AlertCircle, Clock } from 'lucide-vue-next'
+import { Activity, CheckCircle, AlertCircle, Clock, Hash, ArrowDown, ArrowUp } from 'lucide-vue-next'
 
 const stats = ref({
   total_logs: 0,
@@ -9,6 +9,9 @@ const stats = ref({
   error_count: 0,
   pending_count: 0,
   avg_latency_ms: 0,
+  total_tokens: 0,
+  input_tokens: 0,
+  output_tokens: 0,
   models_used: {},
   tools_used: {}
 })
@@ -33,13 +36,11 @@ onMounted(() => {
 
 <template>
   <div class="space-y-6">
-    <h2 class="text-3xl font-bold tracking-tight">Dashboard</h2>
-    
-    <div v-if="loading" class="text-center py-10">
-      Loading stats...
+    <div v-if="loading" class="text-center py-8">
+      <div class="text-muted-foreground">Loading dashboard...</div>
     </div>
     
-    <div v-else class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+    <div v-else class="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
       <div class="rounded-xl border bg-card text-card-foreground shadow-sm p-6">
         <div class="flex flex-row items-center justify-between space-y-0 pb-2">
           <h3 class="tracking-tight text-sm font-medium">Total Requests</h3>
@@ -73,6 +74,22 @@ onMounted(() => {
           <Clock class="h-4 w-4 text-muted-foreground" />
         </div>
         <div class="text-2xl font-bold">{{ stats.avg_latency_ms ? stats.avg_latency_ms.toFixed(0) : 0 }}ms</div>
+      </div>
+
+      <div class="rounded-xl border bg-card text-card-foreground shadow-sm p-6">
+        <div class="flex flex-row items-center justify-between space-y-0 pb-2">
+          <h3 class="tracking-tight text-sm font-medium">Input Tokens</h3>
+          <ArrowDown class="h-4 w-4 text-muted-foreground" />
+        </div>
+        <div class="text-2xl font-bold">{{ stats.input_tokens.toLocaleString() }}</div>
+      </div>
+
+      <div class="rounded-xl border bg-card text-card-foreground shadow-sm p-6">
+        <div class="flex flex-row items-center justify-between space-y-0 pb-2">
+          <h3 class="tracking-tight text-sm font-medium">Output Tokens</h3>
+          <ArrowUp class="h-4 w-4 text-muted-foreground" />
+        </div>
+        <div class="text-2xl font-bold">{{ stats.output_tokens.toLocaleString() }}</div>
       </div>
     </div>
 
