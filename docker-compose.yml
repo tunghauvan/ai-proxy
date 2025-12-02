@@ -51,9 +51,10 @@ services:
       - DATABASE_URL=postgresql+asyncpg://langchain:langchain_secret@postgres:5432/langchain_proxy
       - DATABASE_URL_SYNC=postgresql://langchain:langchain_secret@postgres:5432/langchain_proxy
     volumes:
-      - ./knowledge_base:/app/knowledge_base:ro
+      - ./data/knowledge_base:/app/knowledge_base:ro
       - ./config:/app/config
       - ./logs:/app/logs
+      - ./.env:/app/.env
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,15 +66,15 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 30s
 
-  admin-ui:
+  web:
     build:
-      context: ./admin-ui
+      context: ./web
       dockerfile: Dockerfile
-    image: docker.asean-accesstrade.net/ai/langchain-proxy-admin-ui:latest
+    image: docker.asean-accesstrade.net/ai/langchain-proxy-web:latest
     platform: linux/amd64
-    container_name: admin-ui
+    container_name: web
     ports:
       - "3000:80"
     depends_on:

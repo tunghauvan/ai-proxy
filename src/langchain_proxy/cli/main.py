@@ -1302,6 +1302,41 @@ def logs_clear(config, before_days, yes):
     click.echo(f"Deleted {result['deleted_count']} logs")
 
 
+@cli.command("server")
+@click.option("--host", default="0.0.0.0", help="Host to bind to")
+@click.option("--port", default=8000, type=int, help="Port to bind to")
+@click.option("--reload", is_flag=True, help="Enable auto-reload for development")
+@click.option("--workers", default=1, type=int, help="Number of workers")
+@click.option("--init-db", is_flag=True, help="Initialize database on startup")
+def server_command(host, port, reload, workers, init_db):
+    """Start the LangChain Proxy server"""
+    import uvicorn
+    from langchain_proxy.server.main import app, lifespan
+    from langchain_proxy.server.database import init_db_sync
+
+    if init_db:
+        click.echo("Initializing database...")
+        try:
+            init_db_sync()
+            click.echo("✅ Database initialized successfully")
+        except Exception as e:
+            click.echo(f"❌ Database initialization failed: {e}")
+            sys.exit(1)
+
+    click.echo(f"Starting server on {host}:{port}")
+    if reload:
+        click.echo("Auto-reload enabled")
+
+    uvicorn.run(
+        "langchain_proxy.server.main:app",
+        host=host,
+        port=port,
+        reload=reload,
+        workers=workers,
+        log_level="info"
+    )
+
+
 @cli.command("config")
 @pass_config
 def show_config(config):
@@ -1318,8 +1353,8 @@ def shell_command(config):
     """Open a Python shell with the project loaded"""
     try:
         import IPython
-        from app.config import get_config_store, get_tool_store, get_kb_store
-        from app.graph import graph, create_llm_for_model
+        from langchain_proxy.server.config import get_config_store, get_tool_store, get_kb_store
+        from langchain_proxy.core.graph import graph, create_llm_for_model
         
         click.echo("Loading project modules...")
         user_ns = {

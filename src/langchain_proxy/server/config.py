@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, delete, update
 from sqlalchemy.orm import selectinload
 
-from app.database import (
+from langchain_proxy.server.database import (
     CustomModelDB,
     ModelVersionDB,
     ActiveModelDB,

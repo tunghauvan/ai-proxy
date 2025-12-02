@@ -107,8 +107,35 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+.dmypy_cache/
 .dmypy.json
 dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
+*.sqlite3
+
+# Vector databases
+chroma_db/
+qdrant_storage/
+
+# Temporary files
+tmp/
+temp/

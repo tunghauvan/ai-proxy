@@ -1,7 +1,0 @@
-#!/bin/bash
-# Convenience wrapper for the LangChain Proxy CLI
-# Add this directory to PATH or create an alias:
-#   alias lcp="/path/to/langchain-proxy/lcp"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-python3 "$SCRIPT_DIR/cli.py" "$@"
