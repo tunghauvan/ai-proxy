@@ -1,7 +1,26 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: langchain-postgres
+    environment:
+      - POSTGRES_USER=langchain
+      - POSTGRES_PASSWORD=langchain_secret
+      - POSTGRES_DB=langchain_proxy
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "25432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langchain -d langchain_proxy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: qdrant
+    container_name: qdrant-langchain
     volumes:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
@@ -16,7 +35,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: langchain-proxy-server:latest
+    image: docker.asean-accesstrade.net/ai/langchain-proxy-server:latest
+    # setup platform to linux/amd64 to ensure compatibility with most host systems
+    platform: linux/amd64
     container_name: langchain-proxy-server
     ports:
       - "8000:8000"
@@ -25,12 +46,16 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - RAG_ENABLED=true
-      - QDRANT_HOST=qdrant
+      - QDRANT_HOST=qdrant-langchain
       - QDRANT_PORT=6333
+      - DATABASE_URL=postgresql+asyncpg://langchain:langchain_secret@postgres:5432/langchain_proxy
+      - DATABASE_URL_SYNC=postgresql://langchain:langchain_secret@postgres:5432/langchain_proxy
     volumes:
       - ./knowledge_base:/app/knowledge_base:ro
       - ./config:/app/config
     depends_on:
+      postgres:
+        condition: service_healthy
       qdrant:
         condition: service_healthy
     restart: unless-stopped
@@ -45,7 +70,8 @@ services:
     build:
       context: ./admin-ui
       dockerfile: Dockerfile
-    image: admin-ui:latest
+    image: docker.asean-accesstrade.net/ai/langchain-proxy-admin-ui:latest
+    platform: linux/amd64
     container_name: admin-ui
     ports:
       - "3000:80"
@@ -54,4 +80,5 @@ services:
     restart: unless-stopped
 
 volumes:
+  postgres_data:
   qdrant_data:

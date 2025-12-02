@@ -2,12 +2,13 @@
 import os
 import hashlib
 import json
+import traceback
 from datetime import datetime
-from typing import TypedDict, Annotated, Sequence, Literal, List, Optional, Dict, Any
+from typing import TypedDict, Annotated, Sequence, Literal, List, Optional, Dict, Any, Callable
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage, SystemMessage
-from langchain_core.tools import tool, Tool
+from langchain_core.tools import tool, Tool, StructuredTool
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_qdrant import QdrantVectorStore
@@ -15,7 +16,8 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 import operator
 import httpx
-from app.config import get_active_model, get_config_store
+from pydantic import BaseModel, Field, create_model
+from app.config import get_active_model, get_config_store, get_tool_store
 
 # RAG Configuration helpers live inside the admin config store
 def is_rag_enabled(model_id: Optional[str] = None) -> bool:
@@ -175,7 +177,7 @@ class AgentState(TypedDict):
     model_config_id: Optional[str]  # Custom model ID for per-request config
 
 
-# Define tools
+# Define builtin tools
 @tool
 def get_datetime() -> str:
     """Get the current date and time. Use this tool when the user asks about the current time or date."""
@@ -192,18 +194,215 @@ def search_knowledge_base(query: str) -> str:
     return format_context(docs)
 
 
-# Registered tools that can be enabled on each custom model
-REGISTERED_TOOLS = {
+# Registered builtin tools that can be enabled on each custom model
+BUILTIN_TOOLS = {
     get_datetime.name: get_datetime,
     search_knowledge_base.name: search_knowledge_base,
 }
+
+# Cache for dynamically created custom tools
+_custom_tools_cache: Dict[str, StructuredTool] = {}
+
+
+def _create_safe_execution_context() -> Dict[str, Any]:
+    """Create a safe execution context for custom tool code."""
+    import math
+    import re as regex
+    import json as json_module
+    from datetime import datetime as dt, timedelta, date
+    
+    return {
+        # Safe builtins
+        "abs": abs,
+        "all": all,
+        "any": any,
+        "bool": bool,
+        "dict": dict,
+        "enumerate": enumerate,
+        "filter": filter,
+        "float": float,
+        "format": format,
+        "int": int,
+        "isinstance": isinstance,
+        "len": len,
+        "list": list,
+        "map": map,
+        "max": max,
+        "min": min,
+        "print": print,
+        "range": range,
+        "reversed": reversed,
+        "round": round,
+        "set": set,
+        "sorted": sorted,
+        "str": str,
+        "sum": sum,
+        "tuple": tuple,
+        "type": type,
+        "zip": zip,
+        # Safe modules
+        "math": math,
+        "re": regex,
+        "json": json_module,
+        "datetime": dt,
+        "timedelta": timedelta,
+        "date": date,
+    }
+
+
+def _create_dynamic_tool(tool_config) -> Optional[StructuredTool]:
+    """Create a LangChain tool from a database tool configuration with Python code."""
+    if not tool_config.function_code:
+        return None
+    
+    tool_name = tool_config.name
+    tool_description = tool_config.description
+    function_code = tool_config.function_code
+    parameters = tool_config.parameters
+    
+    # Build pydantic model for parameters
+    field_definitions = {}
+    for param in parameters:
+        param_name = param.name
+        param_type = param.type
+        param_desc = param.description
+        param_required = param.required
+        param_default = param.default
+        
+        # Map type string to Python type
+        type_mapping = {
+            "string": str,
+            "number": float,
+            "integer": int,
+            "boolean": bool,
+            "array": list,
+            "object": dict,
+        }
+        python_type = type_mapping.get(param_type, str)
+        
+        if param_required:
+            field_definitions[param_name] = (python_type, Field(description=param_desc))
+        else:
+            field_definitions[param_name] = (Optional[python_type], Field(default=param_default, description=param_desc))
+    
+    # Create dynamic pydantic model for args
+    if field_definitions:
+        ArgsModel = create_model(f"{tool_name}_args", **field_definitions)
+    else:
+        ArgsModel = None
+    
+    def execute_custom_tool(**kwargs) -> str:
+        """Execute the custom tool code."""
+        try:
+            # Create safe execution context
+            safe_globals = _create_safe_execution_context()
+            safe_locals = {}
+            
+            # Execute the function code to define the function
+            exec(function_code, safe_globals, safe_locals)
+            
+            # Find the main function (should be named same as tool or 'main' or 'run')
+            func = None
+            for name in [tool_name, "main", "run", "execute"]:
+                if name in safe_locals and callable(safe_locals[name]):
+                    func = safe_locals[name]
+                    break
+            
+            # If no named function found, look for any callable
+            if func is None:
+                for name, obj in safe_locals.items():
+                    if callable(obj) and not name.startswith("_"):
+                        func = obj
+                        break
+            
+            if func is None:
+                return f"Error: No executable function found in tool code. Define a function named '{tool_name}', 'main', 'run', or 'execute'."
+            
+            # Check function signature to determine how to call it
+            import inspect
+            sig = inspect.signature(func)
+            
+            # If function accepts **kwargs or has parameters that match kwargs, use kwargs
+            if any(param.kind == param.VAR_KEYWORD for param in sig.parameters.values()) or \
+               any(param.name in kwargs for param in sig.parameters.values()):
+                result = func(**kwargs)
+            # If function has no parameters, call without arguments
+            elif not sig.parameters:
+                result = func()
+            else:
+                # Function has specific parameters but none match kwargs - try to call with matching args
+                matching_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+                if matching_kwargs:
+                    result = func(**matching_kwargs)
+                else:
+                    result = func()
+            
+            return str(result) if result is not None else "Tool executed successfully."
+            
+        except Exception as e:
+            return f"Error executing tool: {str(e)}"
+    
+    # Create the structured tool
+    if ArgsModel:
+        return StructuredTool.from_function(
+            func=execute_custom_tool,
+            name=tool_name,
+            description=tool_description,
+            args_schema=ArgsModel,
+        )
+    else:
+        return StructuredTool.from_function(
+            func=execute_custom_tool,
+            name=tool_name,
+            description=tool_description,
+        )
+
+
+def _get_custom_tools() -> Dict[str, StructuredTool]:
+    """Get all custom tools with function code, creating them dynamically."""
+    global _custom_tools_cache
+    
+    tool_store = get_tool_store()
+    custom_tool_configs = tool_store.get_custom_tools_with_code()
+    
+    # Create tools for any new configs
+    for config in custom_tool_configs:
+        if config.name not in _custom_tools_cache:
+            tool = _create_dynamic_tool(config)
+            if tool:
+                _custom_tools_cache[config.name] = tool
+                print(f"Registered custom tool: {config.name}")
+    
+    # Remove any tools that no longer exist
+    current_names = {c.name for c in custom_tool_configs}
+    to_remove = [name for name in _custom_tools_cache if name not in current_names]
+    for name in to_remove:
+        del _custom_tools_cache[name]
+        print(f"Unregistered custom tool: {name}")
+    
+    return _custom_tools_cache
+
+
+def get_all_registered_tools() -> Dict[str, Any]:
+    """Get all registered tools (builtin + custom)."""
+    all_tools = dict(BUILTIN_TOOLS)
+    all_tools.update(_get_custom_tools())
+    return all_tools
 
 
 def get_active_tools(model_id: Optional[str] = None) -> List[Tool]:
     """Return the tool instances selected for a specific model or the active model."""
     model = _get_model_for_request(model_id)
     active_tool_names = model.tool_names
-    return [REGISTERED_TOOLS[name] for name in active_tool_names if name in REGISTERED_TOOLS]
+    all_tools = get_all_registered_tools()
+    return [all_tools[name] for name in active_tool_names if name in all_tools]
+
+
+def reload_custom_tools():
+    """Force reload of custom tools from database."""
+    global _custom_tools_cache
+    _custom_tools_cache = {}
+    return _get_custom_tools()
 
 
 def create_ollama_llm():

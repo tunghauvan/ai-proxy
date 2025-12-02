@@ -2,14 +2,19 @@
 import os
 import uuid
 import time
-from typing import Optional, List
+import re
+import json
+import asyncio
+from datetime import datetime
+from typing import Optional, List, AsyncGenerator, Any, Dict
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, AIMessageChunk
 
 # Load environment variables
 load_dotenv()
@@ -21,10 +26,13 @@ os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGSMITH_API_KEY", "")
 
 DEFAULT_MODEL = os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud")
 
-from app.config import AVAILABLE_TOOL_NAMES, CustomModel, RagSettings, ModelVersionConfig, get_config_store, parse_model_identifier
+from app.config import AVAILABLE_TOOL_NAMES, CustomModel, RagSettings, ModelVersionConfig, get_config_store, parse_model_identifier, get_tool_store, Tool
+from app.database import init_db_sync
 from app.graph import (
     graph,
     create_ollama_llm,
+    create_llm_for_model,
+    get_active_tools,
     get_kb_stats,
     is_rag_enabled,
     reload_knowledge_base,
@@ -43,6 +51,25 @@ async def lifespan(app: FastAPI):
     print("Starting LangGraph Proxy Server...")
     print(f"Using model: {DEFAULT_MODEL}")
     print(f"LangSmith Project: {os.getenv('LANGSMITH_PROJECT')}")
+    
+    # Initialize PostgreSQL database
+    print("Initializing PostgreSQL database...")
+    try:
+        init_db_sync()
+        print("Database initialized successfully.")
+        
+        # Initialize config store (creates default model if needed)
+        store = get_config_store()
+        active_model = store.get_active_model()
+        print(f"Active model: {active_model.name} (v{active_model.version})")
+        
+        # Initialize tool store (syncs builtin tools to database)
+        tool_store = get_tool_store()
+        tools = tool_store.list_tools()
+        print(f"Available tools: {len(tools)} ({len([t for t in tools if t.is_builtin])} builtin)")
+    except Exception as e:
+        print(f"Warning: Database initialization failed: {e}")
+        print("The server will continue but some features may not work correctly.")
     
     # Initialize RAG
     if is_rag_enabled():
@@ -119,6 +146,26 @@ class ModelListResponse(BaseModel):
     data: List[ModelInfo]
 
 
+# Streaming response models (OpenAI compatible)
+class ChatCompletionChunkDelta(BaseModel):
+    role: Optional[str] = None
+    content: Optional[str] = None
+
+
+class ChatCompletionChunkChoice(BaseModel):
+    index: int
+    delta: ChatCompletionChunkDelta
+    finish_reason: Optional[str] = None
+
+
+class ChatCompletionChunk(BaseModel):
+    id: str
+    object: str = "chat.completion.chunk"
+    created: int
+    model: str
+    choices: List[ChatCompletionChunkChoice]
+
+
 class CustomModelCreateRequest(BaseModel):
     name: str = Field(..., description="Model name (a-z, 0-9, _, -). Must start with letter.")
     version: Optional[str] = Field(default="1.0.0", description="Semantic version (e.g., 1.0.0)")
@@ -178,6 +225,53 @@ class CustomModelResponse(BaseModel):
     updated_at: Optional[str] = None
     active_versions: List[str] = []  # List of active version strings
     version_count: int = 0  # Total number of versions
+
+
+class ToolParameterRequest(BaseModel):
+    name: str = Field(..., description="Parameter name")
+    type: str = Field(default="string", description="Parameter type: string, number, boolean, array, object")
+    description: str = Field(default="", description="Parameter description")
+    required: bool = Field(default=True, description="Whether this parameter is required")
+    default: Optional[Any] = Field(None, description="Default value if not required")
+
+
+class ToolCreateRequest(BaseModel):
+    name: str = Field(..., description="Tool name (a-z, 0-9, _, -). Must start with letter.")
+    description: str = Field(..., description="Description of what the tool does")
+    category: Optional[str] = Field(None, description="Tool category")
+    enabled: Optional[bool] = True
+    function_code: Optional[str] = Field(None, description="Python function code for the tool")
+    parameters: Optional[List[ToolParameterRequest]] = Field(None, description="Function parameters")
+
+
+class ToolUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, description="Tool name (a-z, 0-9, _, -). Must start with letter.")
+    description: Optional[str] = Field(None, description="Description of what the tool does")
+    category: Optional[str] = Field(None, description="Tool category")
+    enabled: Optional[bool] = None
+    function_code: Optional[str] = Field(None, description="Python function code for the tool")
+    parameters: Optional[List[ToolParameterRequest]] = Field(None, description="Function parameters")
+
+
+class ToolParameterResponse(BaseModel):
+    name: str
+    type: str
+    description: str
+    required: bool
+    default: Optional[Any] = None
+
+
+class ToolResponse(BaseModel):
+    id: str
+    name: str
+    description: str
+    category: Optional[str]
+    enabled: bool
+    is_builtin: bool = False
+    function_code: Optional[str] = None
+    parameters: List[ToolParameterResponse] = []
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class ToolListResponse(BaseModel):
@@ -418,7 +512,170 @@ async def deactivate_model_version(model_id: str, version: str):
 @app.get("/v1/admin/tools", response_model=ToolListResponse)
 async def list_admin_tools():
     """Return the tool names that can be assigned to custom models"""
-    return ToolListResponse(tools=AVAILABLE_TOOL_NAMES)
+    tool_store = get_tool_store()
+    tools = tool_store.list_tools()
+    return ToolListResponse(tools=[t.name for t in tools if t.enabled])
+
+
+@app.get("/v1/admin/tools/detailed", response_model=List[ToolResponse])
+async def list_admin_tools_detailed():
+    """Return detailed information about available tools"""
+    tool_store = get_tool_store()
+    tools = tool_store.list_tools()
+    return [
+        ToolResponse(
+            id=t.id,
+            name=t.name,
+            description=t.description,
+            category=t.category,
+            enabled=t.enabled,
+            is_builtin=t.is_builtin,
+            function_code=t.function_code,
+            parameters=[
+                ToolParameterResponse(
+                    name=p.name,
+                    type=p.type,
+                    description=p.description,
+                    required=p.required,
+                    default=p.default
+                ) for p in t.parameters
+            ],
+            created_at=t.created_at,
+            updated_at=t.updated_at
+        )
+        for t in tools
+    ]
+
+
+@app.post("/v1/admin/tools", response_model=ToolResponse, status_code=201)
+async def create_admin_tool(request: ToolCreateRequest):
+    """Create a new tool with optional Python function code"""
+    tool_store = get_tool_store()
+    try:
+        # Convert parameters to dict format for storage
+        params = None
+        if request.parameters:
+            params = [p.model_dump() for p in request.parameters]
+        
+        tool = tool_store.create_tool(
+            name=request.name,
+            description=request.description,
+            category=request.category,
+            enabled=request.enabled if request.enabled is not None else True,
+            function_code=request.function_code,
+            parameters=params,
+        )
+        return ToolResponse(
+            id=tool.id,
+            name=tool.name,
+            description=tool.description,
+            category=tool.category,
+            enabled=tool.enabled,
+            is_builtin=tool.is_builtin,
+            function_code=tool.function_code,
+            parameters=[
+                ToolParameterResponse(
+                    name=p.name,
+                    type=p.type,
+                    description=p.description,
+                    required=p.required,
+                    default=p.default
+                ) for p in tool.parameters
+            ],
+            created_at=tool.created_at,
+            updated_at=tool.updated_at
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/v1/admin/tools/{tool_id}", response_model=ToolResponse)
+async def get_admin_tool(tool_id: str):
+    """Get a specific tool by ID"""
+    tool_store = get_tool_store()
+    tool = tool_store.get_tool(tool_id)
+    
+    if not tool:
+        raise HTTPException(status_code=404, detail=f"Tool '{tool_id}' not found")
+    
+    return ToolResponse(
+        id=tool.id,
+        name=tool.name,
+        description=tool.description,
+        category=tool.category,
+        enabled=tool.enabled,
+        is_builtin=tool.is_builtin,
+        function_code=tool.function_code,
+        parameters=[
+            ToolParameterResponse(
+                name=p.name,
+                type=p.type,
+                description=p.description,
+                required=p.required,
+                default=p.default
+            ) for p in tool.parameters
+        ],
+        created_at=tool.created_at,
+        updated_at=tool.updated_at
+    )
+
+
+@app.put("/v1/admin/tools/{tool_id}", response_model=ToolResponse)
+async def update_admin_tool(tool_id: str, request: ToolUpdateRequest):
+    """Update an existing tool"""
+    tool_store = get_tool_store()
+    try:
+        # Convert parameters to dict format for storage
+        params = None
+        if request.parameters:
+            params = [p.model_dump() for p in request.parameters]
+        
+        tool = tool_store.update_tool(
+            tool_id=tool_id,
+            name=request.name,
+            description=request.description,
+            category=request.category,
+            enabled=request.enabled,
+            function_code=request.function_code,
+            parameters=params,
+        )
+        return ToolResponse(
+            id=tool.id,
+            name=tool.name,
+            description=tool.description,
+            category=tool.category,
+            enabled=tool.enabled,
+            is_builtin=tool.is_builtin,
+            function_code=tool.function_code,
+            parameters=[
+                ToolParameterResponse(
+                    name=p.name,
+                    type=p.type,
+                    description=p.description,
+                    required=p.required,
+                    default=p.default
+                ) for p in tool.parameters
+            ],
+            created_at=tool.created_at,
+            updated_at=tool.updated_at
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/v1/admin/tools/{tool_id}", status_code=204)
+async def delete_admin_tool(tool_id: str):
+    """Delete a tool by ID"""
+    tool_store = get_tool_store()
+    try:
+        tool_store.delete_tool(tool_id)
+        return None
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/v1/rag/reload")
@@ -537,14 +794,33 @@ async def rag_clear():
 @app.get("/v1/models")
 async def list_models():
     """List available models - OpenAI compatible"""
-    return ModelListResponse(
-        data=[
-            ModelInfo(
-                id=DEFAULT_MODEL,
+    store = get_config_store()
+    active_models = [store.get_model(mid) for mid in store.active_model_ids if store.get_model(mid)]
+    
+    model_infos = []
+    for model in active_models:
+        if model.active_versions:
+            # If multiple active versions, list each as name@version
+            for version in model.active_versions:
+                model_infos.append(ModelInfo(
+                    id=f"{model.name}@{version}",
+                    created=int(time.time()),
+                ))
+        else:
+            # If no active versions specified, just use the model name
+            model_infos.append(ModelInfo(
+                id=model.name,
                 created=int(time.time()),
-            )
-        ]
-    )
+            ))
+    
+    # If no active custom models, fall back to default
+    if not model_infos:
+        model_infos = [ModelInfo(
+            id=DEFAULT_MODEL,
+            created=int(time.time()),
+        )]
+    
+    return ModelListResponse(data=model_infos)
 
 
 def ensure_rag_enabled():
@@ -555,6 +831,155 @@ def ensure_rag_enabled():
         )
 
 
+def _resolve_model_config(request_model: str) -> Optional[str]:
+    """Resolve model identifier to model config ID.
+    
+    Returns the model config ID if found, None otherwise.
+    Raises HTTPException if model is disabled or version is not active.
+    """
+    store = get_config_store()
+    
+    # Parse model identifier (may include version)
+    model_name, requested_version = parse_model_identifier(request_model)
+    
+    # Try to resolve the model
+    result = store.resolve_model_identifier(request_model)
+    
+    if result:
+        model, version_config = result
+        
+        # Check if model is enabled
+        if not model.enabled:
+            raise HTTPException(status_code=400, detail=f"Model '{model_name}' is disabled.")
+        
+        # If a specific version was requested, verify it's active
+        if requested_version and version_config:
+            if requested_version not in model.active_versions:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Version '{requested_version}' of model '{model_name}' is not active. "
+                           f"Active versions: {', '.join(model.active_versions)}"
+                )
+        
+        return model.id
+    else:
+        # Check if it's a direct model ID (without version)
+        direct_model = store.get_model(model_name)
+        if direct_model:
+            if not direct_model.enabled:
+                raise HTTPException(status_code=400, detail=f"Model '{model_name}' is disabled.")
+            return direct_model.id
+    
+    # Otherwise, use default LLM (no custom model config)
+    return None
+
+
+def _convert_messages_to_langchain(messages: List[ChatMessage]) -> list:
+    """Convert OpenAI-format messages to LangChain messages."""
+    langchain_messages = []
+    for msg in messages:
+        if msg.role == "system":
+            langchain_messages.append(SystemMessage(content=msg.content))
+        elif msg.role == "user":
+            langchain_messages.append(HumanMessage(content=msg.content))
+        elif msg.role == "assistant":
+            langchain_messages.append(AIMessage(content=msg.content))
+    return langchain_messages
+
+
+async def _stream_chat_response(
+    request: ChatCompletionRequest,
+    model_config_id: Optional[str],
+    langchain_messages: list,
+) -> AsyncGenerator[str, None]:
+    """Generate SSE stream for chat completions using LangGraph streaming."""
+    chat_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+    created = int(time.time())
+    
+    # Send initial chunk with role
+    initial_chunk = ChatCompletionChunk(
+        id=chat_id,
+        created=created,
+        model=request.model,
+        choices=[
+            ChatCompletionChunkChoice(
+                index=0,
+                delta=ChatCompletionChunkDelta(role="assistant"),
+                finish_reason=None,
+            )
+        ],
+    )
+    yield f"data: {initial_chunk.model_dump_json()}\n\n"
+    
+    # Stream from the graph
+    try:
+        async for event in graph.astream_events(
+            {"messages": langchain_messages, "model_config_id": model_config_id},
+            version="v2",
+        ):
+            kind = event.get("event")
+            
+            # Handle streaming tokens from the LLM
+            if kind == "on_chat_model_stream":
+                chunk_data = event.get("data", {})
+                chunk = chunk_data.get("chunk")
+                
+                if chunk and hasattr(chunk, "content") and chunk.content:
+                    content = chunk.content
+                    # Handle both string content and list content
+                    if isinstance(content, list):
+                        # Extract text from content blocks
+                        text_parts = []
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text_parts.append(block.get("text", ""))
+                            elif isinstance(block, str):
+                                text_parts.append(block)
+                        content = "".join(text_parts)
+                    
+                    if content:
+                        stream_chunk = ChatCompletionChunk(
+                            id=chat_id,
+                            created=created,
+                            model=request.model,
+                            choices=[
+                                ChatCompletionChunkChoice(
+                                    index=0,
+                                    delta=ChatCompletionChunkDelta(content=content),
+                                    finish_reason=None,
+                                )
+                            ],
+                        )
+                        yield f"data: {stream_chunk.model_dump_json()}\n\n"
+        
+        # Send final chunk with finish_reason
+        final_chunk = ChatCompletionChunk(
+            id=chat_id,
+            created=created,
+            model=request.model,
+            choices=[
+                ChatCompletionChunkChoice(
+                    index=0,
+                    delta=ChatCompletionChunkDelta(),
+                    finish_reason="stop",
+                )
+            ],
+        )
+        yield f"data: {final_chunk.model_dump_json()}\n\n"
+        yield "data: [DONE]\n\n"
+        
+    except Exception as e:
+        # Send error in stream format
+        error_chunk = {
+            "error": {
+                "message": str(e),
+                "type": "server_error",
+            }
+        }
+        yield f"data: {json.dumps(error_chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     """Chat completions endpoint - OpenAI compatible
@@ -562,56 +987,29 @@ async def chat_completions(request: ChatCompletionRequest):
     Supports model identifiers in formats:
     - "model-name" - uses the latest active version
     - "model-name@1.0.0" - uses a specific version
+    
+    Supports streaming when stream=true is set in the request.
     """
     try:
-        # Check if request.model matches a custom model name (with optional version)
-        model_config_id = None
-        store = get_config_store()
+        # Resolve model configuration
+        model_config_id = _resolve_model_config(request.model)
         
-        # Parse model identifier (may include version)
-        model_name, requested_version = parse_model_identifier(request.model)
+        # Convert messages to LangChain format
+        langchain_messages = _convert_messages_to_langchain(request.messages)
         
-        # Try to resolve the model
-        result = store.resolve_model_identifier(request.model)
+        # Handle streaming request
+        if request.stream:
+            return StreamingResponse(
+                _stream_chat_response(request, model_config_id, langchain_messages),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
         
-        if result:
-            model, version_config = result
-            
-            # Check if model is enabled
-            if not model.enabled:
-                raise HTTPException(status_code=400, detail=f"Model '{model_name}' is disabled.")
-            
-            # If a specific version was requested, verify it's active
-            if requested_version and version_config:
-                if requested_version not in model.active_versions:
-                    raise HTTPException(
-                        status_code=400, 
-                        detail=f"Version '{requested_version}' of model '{model_name}' is not active. "
-                               f"Active versions: {', '.join(model.active_versions)}"
-                    )
-            
-            model_config_id = model.id
-        else:
-            # Check if it's a direct model ID (without version)
-            direct_model = store.get_model(model_name)
-            if direct_model:
-                if not direct_model.enabled:
-                    raise HTTPException(status_code=400, detail=f"Model '{model_name}' is disabled.")
-                model_config_id = direct_model.id
-            # Otherwise, use default LLM (no custom model config)
-        
-        # Convert OpenAI messages to LangChain messages
-        langchain_messages = []
-        for msg in request.messages:
-            if msg.role == "system":
-                langchain_messages.append(SystemMessage(content=msg.content))
-            elif msg.role == "user":
-                langchain_messages.append(HumanMessage(content=msg.content))
-            elif msg.role == "assistant":
-                from langchain_core.messages import AIMessage
-                langchain_messages.append(AIMessage(content=msg.content))
-        
-        # Run the graph with model_config_id for per-request settings
+        # Non-streaming request - use regular invoke
         result = graph.invoke({
             "messages": langchain_messages,
             "model_config_id": model_config_id
