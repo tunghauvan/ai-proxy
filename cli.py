@@ -1117,6 +1117,191 @@ def test_all():
 
 # ==================== UTILITY COMMANDS ====================
 
+# ==================== Chat Logs Commands ====================
+
+@cli.group()
+@pass_config
+def logs(config):
+    """Manage chat logs for debugging and analytics"""
+    pass
+
+
+@logs.command("list")
+@click.option("--model", "-m", help="Filter by model name")
+@click.option("--status", "-s", type=click.Choice(["success", "error", "pending"]), help="Filter by status")
+@click.option("--limit", "-l", default=20, help="Number of logs to show")
+@click.option("--offset", "-o", default=0, help="Offset for pagination")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@pass_config
+def logs_list(config, model, status, limit, offset, as_json):
+    """List recent chat logs"""
+    params = {"limit": limit, "offset": offset}
+    if model:
+        params["model"] = model
+    if status:
+        params["status"] = status
+    
+    result = api_request("GET", "/v1/admin/logs", config.base_url, params=params)
+    
+    if as_json:
+        print_json(result)
+        return
+    
+    click.echo(f"Chat Logs ({result['total']} total, showing {len(result['logs'])})\n")
+    
+    if not result["logs"]:
+        click.echo("No logs found.")
+        return
+    
+    headers = ["ID", "Chat ID", "Model", "Status", "Latency", "Tools", "Created"]
+    rows = []
+    for log in result["logs"]:
+        tools = ", ".join(log.get("tools_used", []) or []) if log.get("tools_used") else "-"
+        latency = f"{log.get('latency_ms', '-')}ms" if log.get("latency_ms") else "-"
+        created = log.get("created_at", "")[:19] if log.get("created_at") else "-"
+        rows.append([
+            log["id"][:8] + "...",
+            log["chat_id"],
+            log["model_name"][:20],
+            log["status"],
+            latency,
+            tools[:30],
+            created,
+        ])
+    
+    print_table(headers, rows, max_width=35)
+
+
+@logs.command("show")
+@click.argument("log_id")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@pass_config
+def logs_show(config, log_id, as_json):
+    """Show details of a specific chat log"""
+    result = api_request("GET", f"/v1/admin/logs/{log_id}", config.base_url)
+    
+    if as_json:
+        print_json(result)
+        return
+    
+    click.echo(f"Chat Log: {result['id']}\n")
+    click.echo(f"  Chat ID: {result['chat_id']}")
+    click.echo(f"  Model: {result['model_name']}")
+    click.echo(f"  Status: {result['status']}")
+    click.echo(f"  Stream: {result['is_stream']}")
+    click.echo(f"  Latency: {result.get('latency_ms', '-')}ms")
+    click.echo(f"  Created: {result['created_at']}")
+    
+    if result.get("model_config_id"):
+        click.echo(f"  Config ID: {result['model_config_id']}")
+    if result.get("kb_id"):
+        click.echo(f"  KB ID: {result['kb_id']}")
+    
+    click.echo("\n--- Tokens ---")
+    click.echo(f"  Prompt: {result.get('prompt_tokens', '-')}")
+    click.echo(f"  Completion: {result.get('completion_tokens', '-')}")
+    click.echo(f"  Total: {result.get('total_tokens', '-')}")
+    
+    click.echo("\n--- Request ---")
+    if result.get("user_message"):
+        click.echo(f"  User: {result['user_message'][:200]}...")
+    
+    click.echo("\n--- Response ---")
+    if result.get("response_content"):
+        content = result["response_content"]
+        if len(content) > 500:
+            click.echo(f"  {content[:500]}...")
+        else:
+            click.echo(f"  {content}")
+    
+    if result.get("tools_used"):
+        click.echo("\n--- Tools Used ---")
+        for tool in result["tools_used"]:
+            click.echo(f"  - {tool}")
+    
+    if result.get("tool_calls"):
+        click.echo("\n--- Tool Calls ---")
+        for tc in result["tool_calls"]:
+            click.echo(f"  {tc.get('name', 'unknown')}:")
+            click.echo(f"    Input: {json.dumps(tc.get('input', {}))}")
+            if tc.get("output"):
+                output = tc["output"]
+                if len(output) > 200:
+                    output = output[:200] + "..."
+                click.echo(f"    Output: {output}")
+    
+    if result.get("error_message"):
+        click.echo("\n--- Error ---")
+        click.echo(f"  Type: {result.get('error_type', 'Unknown')}")
+        click.echo(f"  Message: {result['error_message']}")
+
+
+@logs.command("stats")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@pass_config
+def logs_stats(config, as_json):
+    """Show chat log statistics"""
+    result = api_request("GET", "/v1/admin/logs/stats", config.base_url)
+    
+    if as_json:
+        print_json(result)
+        return
+    
+    click.echo("Chat Log Statistics\n")
+    click.echo(f"  Total Logs: {result['total_logs']}")
+    click.echo(f"  Success: {result['success_count']}")
+    click.echo(f"  Errors: {result['error_count']}")
+    click.echo(f"  Pending: {result['pending_count']}")
+    
+    if result.get("avg_latency_ms"):
+        click.echo(f"  Avg Latency: {result['avg_latency_ms']:.1f}ms")
+    
+    if result.get("models_used"):
+        click.echo("\n  Models Used:")
+        for model, count in result["models_used"].items():
+            click.echo(f"    - {model}: {count} requests")
+    
+    if result.get("tools_used"):
+        click.echo("\n  Tools Used:")
+        for tool, count in result["tools_used"].items():
+            click.echo(f"    - {tool}: {count} calls")
+
+
+@logs.command("delete")
+@click.argument("log_id")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@pass_config
+def logs_delete(config, log_id, yes):
+    """Delete a specific chat log"""
+    if not yes:
+        click.confirm(f"Delete chat log {log_id}?", abort=True)
+    
+    result = api_request("DELETE", f"/v1/admin/logs/{log_id}", config.base_url)
+    click.echo(f"Deleted log: {result['id']}")
+
+
+@logs.command("clear")
+@click.option("--before-days", "-d", type=int, help="Only delete logs older than this many days")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@pass_config
+def logs_clear(config, before_days, yes):
+    """Clear chat logs"""
+    if before_days:
+        msg = f"Delete all chat logs older than {before_days} days?"
+    else:
+        msg = "Delete ALL chat logs?"
+    
+    if not yes:
+        click.confirm(msg, abort=True)
+    
+    params = {}
+    if before_days:
+        params["before_days"] = before_days
+    
+    result = api_request("DELETE", "/v1/admin/logs", config.base_url, params=params)
+    click.echo(f"Deleted {result['deleted_count']} logs")
+
+
 @cli.command("config")
 @pass_config
 def show_config(config):

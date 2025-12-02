@@ -63,7 +63,7 @@ os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGSMITH_API_KEY", "")
 DEFAULT_MODEL = os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud")
 
 from app.config import AVAILABLE_TOOL_NAMES, CustomModel, RagSettings, ModelVersionConfig, get_config_store, parse_model_identifier, get_tool_store, Tool, get_kb_store, KnowledgeBase
-from app.database import init_db_sync
+from app.database import init_db_sync, ChatLogService, ChatLogDB
 from app.graph import (
     graph,
     create_ollama_llm,
@@ -951,6 +951,168 @@ async def rag_clear(kb_id: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==================== Chat Logs API ====================
+
+class ChatLogListResponse(BaseModel):
+    """Response for listing chat logs"""
+    logs: List[Dict[str, Any]]
+    total: int
+    limit: int
+    offset: int
+
+
+class ChatLogStats(BaseModel):
+    """Statistics for chat logs"""
+    total_logs: int
+    success_count: int
+    error_count: int
+    pending_count: int
+    avg_latency_ms: Optional[float]
+    models_used: Dict[str, int]
+    tools_used: Dict[str, int]
+
+
+@app.get("/v1/admin/logs")
+async def list_chat_logs(
+    model: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List chat logs with optional filters
+    
+    Query parameters:
+    - model: Filter by model name
+    - status: Filter by status (success, error, pending)
+    - limit: Maximum number of logs to return (default 50)
+    - offset: Number of logs to skip for pagination
+    """
+    try:
+        logs = ChatLogService.list_logs(
+            model_name=model,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+        
+        # Count total (would be better with a separate count query, but this works for now)
+        all_logs = ChatLogService.list_logs(
+            model_name=model,
+            status=status,
+            limit=10000,  # Get all for count
+            offset=0,
+        )
+        
+        return ChatLogListResponse(
+            logs=[ChatLogService.log_to_dict(log) for log in logs],
+            total=len(all_logs),
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v1/admin/logs/stats")
+async def get_chat_log_stats():
+    """Get statistics about chat logs"""
+    try:
+        all_logs = ChatLogService.list_logs(limit=10000, offset=0)
+        
+        success_count = sum(1 for log in all_logs if log.status == "success")
+        error_count = sum(1 for log in all_logs if log.status == "error")
+        pending_count = sum(1 for log in all_logs if log.status == "pending")
+        
+        # Calculate average latency for successful requests
+        latencies = [log.latency_ms for log in all_logs if log.latency_ms and log.status == "success"]
+        avg_latency = sum(latencies) / len(latencies) if latencies else None
+        
+        # Count models used
+        models_used = {}
+        for log in all_logs:
+            models_used[log.model_name] = models_used.get(log.model_name, 0) + 1
+        
+        # Count tools used
+        tools_used = {}
+        for log in all_logs:
+            if log.tools_used:
+                for tool in log.tools_used:
+                    tools_used[tool] = tools_used.get(tool, 0) + 1
+        
+        return ChatLogStats(
+            total_logs=len(all_logs),
+            success_count=success_count,
+            error_count=error_count,
+            pending_count=pending_count,
+            avg_latency_ms=avg_latency,
+            models_used=models_used,
+            tools_used=tools_used,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v1/admin/logs/{log_id}")
+async def get_chat_log(log_id: str):
+    """Get a specific chat log by ID"""
+    try:
+        log = ChatLogService.get_log(log_id)
+        if not log:
+            raise HTTPException(status_code=404, detail=f"Chat log {log_id} not found")
+        return ChatLogService.log_to_dict(log)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v1/admin/logs/chat/{chat_id}")
+async def get_chat_log_by_chat_id(chat_id: str):
+    """Get a chat log by chat completion ID (chatcmpl-xxx)"""
+    try:
+        log = ChatLogService.get_log_by_chat_id(chat_id)
+        if not log:
+            raise HTTPException(status_code=404, detail=f"Chat log for {chat_id} not found")
+        return ChatLogService.log_to_dict(log)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/v1/admin/logs/{log_id}")
+async def delete_chat_log(log_id: str):
+    """Delete a specific chat log"""
+    try:
+        success = ChatLogService.delete_log(log_id)
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Chat log {log_id} not found")
+        return {"status": "deleted", "id": log_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/v1/admin/logs")
+async def clear_chat_logs(before_days: Optional[int] = None):
+    """Clear chat logs, optionally only before a certain number of days ago
+    
+    Query parameters:
+    - before_days: Only delete logs older than this many days
+    """
+    try:
+        before_date = None
+        if before_days:
+            from datetime import timedelta
+            before_date = datetime.utcnow() - timedelta(days=before_days)
+        
+        count = ChatLogService.clear_logs(before_date)
+        return {"status": "cleared", "deleted_count": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/v1/models")
 async def list_models():
     """List available models - OpenAI compatible"""
@@ -1056,6 +1218,29 @@ async def _stream_chat_response(
     """Generate SSE stream for chat completions using LangGraph streaming."""
     chat_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
     created = int(time.time())
+    start_time = time.time()
+    
+    # Extract messages for logging
+    request_messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+    user_message = next((msg.content for msg in reversed(request.messages) if msg.role == "user"), None)
+    system_message = next((msg.content for msg in request.messages if msg.role == "system"), None)
+    
+    # Create chat log entry
+    chat_log = None
+    try:
+        chat_log = ChatLogService.create_log(
+            chat_id=chat_id,
+            model_name=request.model,
+            request_messages=request_messages,
+            is_stream=True,
+            model_config_id=model_config_id,
+            kb_id=kb_id,
+            system_message=system_message,
+            user_message=user_message,
+        )
+        logger.info(f"Chat log created: {chat_log.id} for chat_id: {chat_id}")
+    except Exception as e:
+        logger.error(f"Failed to create chat log: {e}")
     
     # Send initial chunk with role
     initial_chunk = ChatCompletionChunk(
@@ -1072,6 +1257,11 @@ async def _stream_chat_response(
     )
     yield f"data: {initial_chunk.model_dump_json()}\n\n"
     
+    # Track response content and tool calls
+    full_response = []
+    tools_used = []
+    tool_calls_log = []
+    
     # Stream from the graph
     try:
         async for event in graph.astream_events(
@@ -1080,8 +1270,27 @@ async def _stream_chat_response(
         ):
             kind = event.get("event")
             
+            # Track tool calls
+            if kind == "on_tool_start":
+                tool_name = event.get("name", "unknown")
+                tool_input = event.get("data", {}).get("input", {})
+                tools_used.append(tool_name)
+                tool_calls_log.append({
+                    "name": tool_name,
+                    "input": tool_input,
+                    "start_time": time.time(),
+                })
+                logger.info(f"Tool call started: {tool_name} with input: {tool_input}")
+            
+            elif kind == "on_tool_end":
+                tool_output = event.get("data", {}).get("output", "")
+                if tool_calls_log:
+                    tool_calls_log[-1]["output"] = str(tool_output)[:1000]  # Limit output size
+                    tool_calls_log[-1]["end_time"] = time.time()
+                logger.info(f"Tool call ended with output: {str(tool_output)[:200]}")
+            
             # Handle streaming tokens from the LLM
-            if kind == "on_chat_model_stream":
+            elif kind == "on_chat_model_stream":
                 chunk_data = event.get("data", {})
                 chunk = chunk_data.get("chunk")
                 
@@ -1099,6 +1308,7 @@ async def _stream_chat_response(
                         content = "".join(text_parts)
                     
                     if content:
+                        full_response.append(content)
                         stream_chunk = ChatCompletionChunk(
                             id=chat_id,
                             created=created,
@@ -1129,7 +1339,45 @@ async def _stream_chat_response(
         yield f"data: {final_chunk.model_dump_json()}\n\n"
         yield "data: [DONE]\n\n"
         
+        # Update chat log with success
+        if chat_log:
+            response_content = "".join(full_response)
+            latency_ms = int((time.time() - start_time) * 1000)
+            prompt_tokens = sum(len(msg["content"].split()) for msg in request_messages if msg.get("content"))
+            completion_tokens = len(response_content.split())
+            
+            try:
+                ChatLogService.update_log(
+                    log_id=chat_log.id,
+                    response_content=response_content,
+                    tools_used=tools_used if tools_used else None,
+                    tool_calls=tool_calls_log if tool_calls_log else None,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=prompt_tokens + completion_tokens,
+                    latency_ms=latency_ms,
+                    status="success",
+                )
+                logger.info(f"Chat log updated: {chat_log.id}, latency: {latency_ms}ms, tools: {tools_used}")
+            except Exception as e:
+                logger.error(f"Failed to update chat log: {e}")
+        
     except Exception as e:
+        # Update chat log with error
+        if chat_log:
+            latency_ms = int((time.time() - start_time) * 1000)
+            try:
+                ChatLogService.update_log(
+                    log_id=chat_log.id,
+                    status="error",
+                    error_message=str(e),
+                    error_type=type(e).__name__,
+                    latency_ms=latency_ms,
+                )
+                logger.error(f"Chat log error recorded: {chat_log.id}, error: {e}")
+            except Exception as log_error:
+                logger.error(f"Failed to update chat log with error: {log_error}")
+        
         # Send error in stream format
         error_chunk = {
             "error": {
@@ -1179,6 +1427,31 @@ async def chat_completions(request: ChatCompletionRequest, kb_id: Optional[str] 
             )
         
         # Non-streaming request - use regular invoke
+        chat_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+        start_time = time.time()
+        
+        # Extract messages for logging
+        request_messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+        user_message = next((msg.content for msg in reversed(request.messages) if msg.role == "user"), None)
+        system_message = next((msg.content for msg in request.messages if msg.role == "system"), None)
+        
+        # Create chat log entry
+        chat_log = None
+        try:
+            chat_log = ChatLogService.create_log(
+                chat_id=chat_id,
+                model_name=request.model,
+                request_messages=request_messages,
+                is_stream=False,
+                model_config_id=model_config_id,
+                kb_id=kb_id,
+                system_message=system_message,
+                user_message=user_message,
+            )
+            logger.info(f"Chat log created: {chat_log.id} for chat_id: {chat_id}")
+        except Exception as e:
+            logger.error(f"Failed to create chat log: {e}")
+        
         result = graph.invoke({
             "messages": langchain_messages,
             "model_config_id": model_config_id,
@@ -1189,12 +1462,49 @@ async def chat_completions(request: ChatCompletionRequest, kb_id: Optional[str] 
         response_message = result["messages"][-1]
         response_content = response_message.content
         
+        # Extract tool calls from result messages
+        tools_used = []
+        tool_calls_log = []
+        for msg in result.get("messages", []):
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tool_name = tc.get("name", "unknown") if isinstance(tc, dict) else getattr(tc, "name", "unknown")
+                    tool_args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
+                    tools_used.append(tool_name)
+                    tool_calls_log.append({
+                        "name": tool_name,
+                        "input": tool_args,
+                    })
+            # Check for ToolMessage to get outputs
+            if hasattr(msg, "__class__") and msg.__class__.__name__ == "ToolMessage":
+                if tool_calls_log:
+                    tool_calls_log[-1]["output"] = str(msg.content)[:1000]
+        
         # Calculate approximate token counts
         prompt_tokens = sum(len(msg.content.split()) for msg in request.messages)
         completion_tokens = len(response_content.split())
+        latency_ms = int((time.time() - start_time) * 1000)
+        
+        # Update chat log with success
+        if chat_log:
+            try:
+                ChatLogService.update_log(
+                    log_id=chat_log.id,
+                    response_content=response_content,
+                    tools_used=tools_used if tools_used else None,
+                    tool_calls=tool_calls_log if tool_calls_log else None,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=prompt_tokens + completion_tokens,
+                    latency_ms=latency_ms,
+                    status="success",
+                )
+                logger.info(f"Chat log updated: {chat_log.id}, latency: {latency_ms}ms, tools: {tools_used}")
+            except Exception as e:
+                logger.error(f"Failed to update chat log: {e}")
         
         return ChatCompletionResponse(
-            id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            id=chat_id,
             created=int(time.time()),
             model=request.model,
             choices=[
@@ -1213,6 +1523,20 @@ async def chat_completions(request: ChatCompletionRequest, kb_id: Optional[str] 
     except HTTPException:
         raise
     except Exception as e:
+        # Log error if we have a chat log
+        if 'chat_log' in locals() and chat_log:
+            latency_ms = int((time.time() - start_time) * 1000) if 'start_time' in locals() else 0
+            try:
+                ChatLogService.update_log(
+                    log_id=chat_log.id,
+                    status="error",
+                    error_message=str(e),
+                    error_type=type(e).__name__,
+                    latency_ms=latency_ms,
+                )
+                logger.error(f"Chat log error recorded: {chat_log.id}, error: {e}")
+            except Exception as log_error:
+                logger.error(f"Failed to update chat log with error: {log_error}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

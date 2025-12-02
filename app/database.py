@@ -189,6 +189,61 @@ class SettingDB(Base):
         return f"<SettingDB(key={self.key})>"
 
 
+class ChatLogDB(Base):
+    """Database model for chat interaction logs - useful for debugging and analytics."""
+    
+    __tablename__ = "chat_logs"
+    
+    id = Column(String(36), primary_key=True)  # UUID
+    chat_id = Column(String(64), nullable=False, index=True)  # OpenAI-style chat ID (chatcmpl-xxx)
+    model_name = Column(String(255), nullable=False, index=True)  # Model used
+    model_config_id = Column(String(36), nullable=True)  # Custom model config ID if any
+    kb_id = Column(String(36), nullable=True)  # Knowledge base ID if used
+    
+    # Request details
+    request_messages = Column(JSON, nullable=False)  # Original request messages
+    system_message = Column(Text, nullable=True)  # System message if any
+    user_message = Column(Text, nullable=True)  # Last user message
+    
+    # Response details
+    response_content = Column(Text, nullable=True)  # Final response content
+    response_messages = Column(JSON, nullable=True)  # All response messages including tool calls
+    
+    # Tool usage
+    tools_used = Column(JSON, nullable=True)  # List of tools that were called
+    tool_calls = Column(JSON, nullable=True)  # Detailed tool call information
+    
+    # RAG context
+    rag_context = Column(Text, nullable=True)  # Retrieved RAG context if any
+    rag_documents = Column(JSON, nullable=True)  # Document sources used
+    
+    # Metrics
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+    latency_ms = Column(Integer, nullable=True)  # Response time in milliseconds
+    
+    # Status and errors
+    status = Column(String(20), nullable=False, default="success")  # success, error, timeout
+    error_message = Column(Text, nullable=True)
+    error_type = Column(String(100), nullable=True)
+    
+    # Stream info
+    is_stream = Column(Boolean, nullable=False, default=False)
+    
+    # Timestamps
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    
+    __table_args__ = (
+        Index("ix_chat_logs_created_at_desc", created_at.desc()),
+        Index("ix_chat_logs_model_created", model_name, created_at.desc()),
+        Index("ix_chat_logs_status", status),
+    )
+    
+    def __repr__(self):
+        return f"<ChatLogDB(id={self.id}, chat_id={self.chat_id}, model={self.model_name})>"
+
+
 # Database initialization functions
 def init_db_sync():
     """Initialize database tables synchronously."""
@@ -257,3 +312,194 @@ def db_version_to_dict(db_version: ModelVersionDB) -> Dict[str, Any]:
         "description": db_version.description,
         "created_at": db_version.created_at.isoformat() + "Z" if db_version.created_at else None,
     }
+
+
+class ChatLogService:
+    """Service for managing chat logs."""
+    
+    @staticmethod
+    def create_log(
+        chat_id: str,
+        model_name: str,
+        request_messages: List[Dict[str, Any]],
+        is_stream: bool = False,
+        model_config_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+        system_message: Optional[str] = None,
+        user_message: Optional[str] = None,
+    ) -> ChatLogDB:
+        """Create a new chat log entry."""
+        import uuid
+        log = ChatLogDB(
+            id=str(uuid.uuid4()),
+            chat_id=chat_id,
+            model_name=model_name,
+            model_config_id=model_config_id,
+            kb_id=kb_id,
+            request_messages=request_messages,
+            system_message=system_message,
+            user_message=user_message,
+            is_stream=is_stream,
+            status="pending",
+        )
+        session = get_sync_session()
+        try:
+            session.add(log)
+            session.commit()
+            session.refresh(log)
+            return log
+        finally:
+            session.close()
+    
+    @staticmethod
+    def update_log(
+        log_id: str,
+        response_content: Optional[str] = None,
+        response_messages: Optional[List[Dict[str, Any]]] = None,
+        tools_used: Optional[List[str]] = None,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
+        rag_context: Optional[str] = None,
+        rag_documents: Optional[List[Dict[str, Any]]] = None,
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
+        total_tokens: Optional[int] = None,
+        latency_ms: Optional[int] = None,
+        status: Optional[str] = None,
+        error_message: Optional[str] = None,
+        error_type: Optional[str] = None,
+    ) -> Optional[ChatLogDB]:
+        """Update an existing chat log entry."""
+        session = get_sync_session()
+        try:
+            log = session.query(ChatLogDB).filter(ChatLogDB.id == log_id).first()
+            if not log:
+                return None
+            
+            if response_content is not None:
+                log.response_content = response_content
+            if response_messages is not None:
+                log.response_messages = response_messages
+            if tools_used is not None:
+                log.tools_used = tools_used
+            if tool_calls is not None:
+                log.tool_calls = tool_calls
+            if rag_context is not None:
+                log.rag_context = rag_context
+            if rag_documents is not None:
+                log.rag_documents = rag_documents
+            if prompt_tokens is not None:
+                log.prompt_tokens = prompt_tokens
+            if completion_tokens is not None:
+                log.completion_tokens = completion_tokens
+            if total_tokens is not None:
+                log.total_tokens = total_tokens
+            if latency_ms is not None:
+                log.latency_ms = latency_ms
+            if status is not None:
+                log.status = status
+            if error_message is not None:
+                log.error_message = error_message
+            if error_type is not None:
+                log.error_type = error_type
+            
+            session.commit()
+            session.refresh(log)
+            return log
+        finally:
+            session.close()
+    
+    @staticmethod
+    def get_log(log_id: str) -> Optional[ChatLogDB]:
+        """Get a chat log by ID."""
+        session = get_sync_session()
+        try:
+            return session.query(ChatLogDB).filter(ChatLogDB.id == log_id).first()
+        finally:
+            session.close()
+    
+    @staticmethod
+    def get_log_by_chat_id(chat_id: str) -> Optional[ChatLogDB]:
+        """Get a chat log by chat completion ID."""
+        session = get_sync_session()
+        try:
+            return session.query(ChatLogDB).filter(ChatLogDB.chat_id == chat_id).first()
+        finally:
+            session.close()
+    
+    @staticmethod
+    def list_logs(
+        model_name: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[ChatLogDB]:
+        """List chat logs with optional filters."""
+        session = get_sync_session()
+        try:
+            query = session.query(ChatLogDB)
+            if model_name:
+                query = query.filter(ChatLogDB.model_name == model_name)
+            if status:
+                query = query.filter(ChatLogDB.status == status)
+            query = query.order_by(ChatLogDB.created_at.desc())
+            query = query.offset(offset).limit(limit)
+            return query.all()
+        finally:
+            session.close()
+    
+    @staticmethod
+    def delete_log(log_id: str) -> bool:
+        """Delete a chat log by ID."""
+        session = get_sync_session()
+        try:
+            log = session.query(ChatLogDB).filter(ChatLogDB.id == log_id).first()
+            if not log:
+                return False
+            session.delete(log)
+            session.commit()
+            return True
+        finally:
+            session.close()
+    
+    @staticmethod
+    def clear_logs(before_date: Optional[datetime] = None) -> int:
+        """Clear chat logs, optionally before a specific date."""
+        session = get_sync_session()
+        try:
+            query = session.query(ChatLogDB)
+            if before_date:
+                query = query.filter(ChatLogDB.created_at < before_date)
+            count = query.delete()
+            session.commit()
+            return count
+        finally:
+            session.close()
+    
+    @staticmethod
+    def log_to_dict(log: ChatLogDB) -> Dict[str, Any]:
+        """Convert a ChatLogDB to a dictionary."""
+        return {
+            "id": log.id,
+            "chat_id": log.chat_id,
+            "model_name": log.model_name,
+            "model_config_id": log.model_config_id,
+            "kb_id": log.kb_id,
+            "request_messages": log.request_messages,
+            "system_message": log.system_message,
+            "user_message": log.user_message,
+            "response_content": log.response_content,
+            "response_messages": log.response_messages,
+            "tools_used": log.tools_used,
+            "tool_calls": log.tool_calls,
+            "rag_context": log.rag_context,
+            "rag_documents": log.rag_documents,
+            "prompt_tokens": log.prompt_tokens,
+            "completion_tokens": log.completion_tokens,
+            "total_tokens": log.total_tokens,
+            "latency_ms": log.latency_ms,
+            "status": log.status,
+            "error_message": log.error_message,
+            "error_type": log.error_type,
+            "is_stream": log.is_stream,
+            "created_at": log.created_at.isoformat() + "Z" if log.created_at else None,
+        }
