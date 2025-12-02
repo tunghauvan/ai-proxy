@@ -17,6 +17,7 @@ from app.database import (
     ModelVersionDB,
     ActiveModelDB,
     ToolDB,
+    KnowledgeBaseDB,
     get_sync_session,
     init_db_sync,
     db_model_to_dict,
@@ -29,7 +30,14 @@ BUILTIN_TOOL_NAMES = ["get_datetime", "search_knowledge_base"]
 # This will be dynamically populated with builtin + database tools
 AVAILABLE_TOOL_NAMES = BUILTIN_TOOL_NAMES.copy()
 
-DEFAULT_MODEL_ID = "default"
+# Generate a consistent default model ID using hex format
+def _generate_hex_id() -> str:
+    """Generate an 8-character hex ID."""
+    return uuid.uuid4().hex[:8]
+
+# Default IDs (these are fixed values to ensure consistency)
+DEFAULT_MODEL_ID = "a1b2c3d4"  # Fixed default model ID in hex format
+DEFAULT_KB_ID = "e5f6a7b8"  # Fixed default KB ID in hex format
 
 # Whitelist of allowed model_params keys for safety
 ALLOWED_MODEL_PARAMS = ["temperature", "max_tokens", "top_p", "stop", "presence_penalty", "frequency_penalty"]
@@ -432,7 +440,7 @@ class ConfigStore:
                 safe_params = {k: v for k, v in model_params.items() if k in ALLOWED_MODEL_PARAMS}
             
             now = datetime.utcnow()
-            model_id = str(uuid.uuid4())
+            model_id = uuid.uuid4().hex[:8]
             
             with get_sync_session() as session:
                 db_model = CustomModelDB(
@@ -834,9 +842,10 @@ class Tool(BaseModel):
 
 
 # Built-in tool definitions (these have actual code implementations)
+# Using fixed hex IDs for consistency
 BUILTIN_TOOLS = {
     "get_datetime": Tool(
-        id="get_datetime",
+        id="c9d0e1f2",  # Fixed hex ID for get_datetime
         name="get_datetime",
         description="Get the current date and time. Use this tool when the user asks about the current time or date.",
         category="Utility",
@@ -845,7 +854,7 @@ BUILTIN_TOOLS = {
         created_at="2024-01-01T00:00:00Z"
     ),
     "search_knowledge_base": Tool(
-        id="search_knowledge_base",
+        id="f3a4b5c6",  # Fixed hex ID for search_knowledge_base
         name="search_knowledge_base",
         description="Search the knowledge base for relevant information. Use this tool when you need to find specific information from the knowledge base documents.",
         category="Search",
@@ -881,7 +890,7 @@ class ToolStore:
         self._initialized = True
 
     def _sync_builtin_tools(self) -> None:
-        """Ensure builtin tools exist in database."""
+        """Ensure builtin tools exist in database with correct hex IDs."""
         with get_sync_session() as session:
             for tool_name, tool_def in BUILTIN_TOOLS.items():
                 existing = session.execute(
@@ -901,6 +910,10 @@ class ToolStore:
                         updated_at=datetime.utcnow(),
                     )
                     session.add(db_tool)
+                elif existing.id != tool_def.id:
+                    # Update existing tool to use new hex ID
+                    existing.id = tool_def.id
+                    existing.updated_at = datetime.utcnow()
             session.commit()
 
     def _update_available_tools(self) -> None:
@@ -957,7 +970,7 @@ class ToolStore:
             if function_code:
                 self._validate_function_code(function_code, name)
             
-            tool_id = name  # Use name as ID for simplicity
+            tool_id = uuid.uuid4().hex[:8]  # Use hex format for tool ID
             now = datetime.utcnow()
             
             with get_sync_session() as session:
@@ -1031,7 +1044,7 @@ class ToolStore:
                 
                 if name is not None:
                     db_tool.name = name
-                    db_tool.id = name  # Update ID to match name
+                    # Note: ID remains unchanged (hex format, not tied to name)
                 if description is not None:
                     db_tool.description = description
                 if category is not None:
@@ -1051,7 +1064,7 @@ class ToolStore:
             # Update available tools list
             self._update_available_tools()
             
-            return self.get_tool(name if name else tool_id)
+            return self.get_tool(tool_id)  # Use original ID since it doesn't change
 
     def delete_tool(self, tool_id: str) -> None:
         """Delete a tool by ID."""
@@ -1148,3 +1161,236 @@ def get_tool_store() -> ToolStore:
     if _tool_store is None:
         _tool_store = ToolStore()
     return _tool_store
+
+
+# ========== KNOWLEDGE BASE MANAGEMENT ==========
+
+class KnowledgeBase(BaseModel):
+    """Representation of a knowledge base."""
+    id: str
+    name: str
+    description: Optional[str] = None
+    collection: str
+    embedding_model: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class KnowledgeBaseStore:
+    """Persistent store for knowledge bases using PostgreSQL."""
+
+    def __init__(self):
+        self._lock = Lock()
+        self._initialized = False
+        self._initialize()
+
+    def _initialize(self) -> None:
+        """Initialize database and ensure default knowledge base exists."""
+        if self._initialized:
+            return
+        
+        # Initialize database tables
+        init_db_sync()
+        
+        # Ensure at least one knowledge base exists and migrate old IDs
+        with get_sync_session() as session:
+            result = session.execute(select(KnowledgeBaseDB).limit(1))
+            existing_kb = result.scalar_one_or_none()
+            
+            if not existing_kb:
+                # Create default knowledge base
+                default_kb = self._create_default_kb_db(session)
+                session.add(default_kb)
+                session.commit()
+            elif existing_kb.id == "default_kb":
+                # Migrate old default KB ID to new hex format
+                existing_kb.id = DEFAULT_KB_ID
+                existing_kb.updated_at = datetime.utcnow()
+                session.commit()
+        
+        self._initialized = True
+
+    def _create_default_kb_db(self, session) -> KnowledgeBaseDB:
+        """Create default knowledge base database record."""
+        now = datetime.utcnow()
+        default_collection = os.getenv("QDRANT_COLLECTION", "knowledge_base")
+        
+        db_kb = KnowledgeBaseDB(
+            id=DEFAULT_KB_ID,  # Use hex format ID
+            name="Default Knowledge Base",
+            description="Default knowledge base for general use",
+            collection=default_collection,
+            embedding_model=None,
+            created_at=now,
+            updated_at=now,
+        )
+        
+        return db_kb
+
+    def list_knowledge_bases(self) -> List[KnowledgeBase]:
+        """List all knowledge bases."""
+        with get_sync_session() as session:
+            result = session.execute(select(KnowledgeBaseDB).order_by(KnowledgeBaseDB.name))
+            db_kbs = result.scalars().all()
+            return [self._db_to_pydantic(kb) for kb in db_kbs]
+
+    def get_knowledge_base(self, kb_id: str) -> Optional[KnowledgeBase]:
+        """Get a knowledge base by ID or name."""
+        with get_sync_session() as session:
+            result = session.execute(
+                select(KnowledgeBaseDB).where(
+                    (KnowledgeBaseDB.id == kb_id) | (KnowledgeBaseDB.name == kb_id)
+                )
+            )
+            db_kb = result.scalar_one_or_none()
+            if db_kb:
+                return self._db_to_pydantic(db_kb)
+            return None
+
+    def create_knowledge_base(
+        self,
+        name: str,
+        description: Optional[str] = None,
+        collection: Optional[str] = None,
+        embedding_model: Optional[str] = None,
+    ) -> KnowledgeBase:
+        """Create a new knowledge base."""
+        with self._lock:
+            # Validate name
+            if not name or not re.match(r'^[a-z][a-z0-9_-]*$', name):
+                raise ValueError(
+                    "Knowledge base name must start with a letter and contain only lowercase letters, "
+                    "numbers, underscores, and hyphens."
+                )
+            
+            # Check for duplicates
+            existing = self.get_knowledge_base(name)
+            if existing:
+                raise ValueError(f"Knowledge base '{name}' already exists.")
+            
+            kb_id = uuid.uuid4().hex[:8]  # Use hex format for KB ID
+            now = datetime.utcnow()
+            
+            # Generate collection name if not provided
+            if not collection:
+                collection = f"kb_{kb_id.replace('-', '_')}"
+            
+            # Check collection uniqueness
+            with get_sync_session() as session:
+                existing_coll = session.execute(
+                    select(KnowledgeBaseDB).where(KnowledgeBaseDB.collection == collection)
+                ).scalar_one_or_none()
+                if existing_coll:
+                    raise ValueError(f"Collection '{collection}' is already used by another knowledge base.")
+            
+            with get_sync_session() as session:
+                db_kb = KnowledgeBaseDB(
+                    id=kb_id,
+                    name=name,
+                    description=description,
+                    collection=collection,
+                    embedding_model=embedding_model,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(db_kb)
+                session.commit()
+                session.refresh(db_kb)
+            
+            return self.get_knowledge_base(kb_id)
+
+    def update_knowledge_base(
+        self,
+        kb_id: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        collection: Optional[str] = None,
+        embedding_model: Optional[str] = None,
+    ) -> KnowledgeBase:
+        """Update an existing knowledge base."""
+        with self._lock:
+            kb = self.get_knowledge_base(kb_id)
+            if not kb:
+                raise KeyError(f"Knowledge base '{kb_id}' not found.")
+            
+            # Validate new name if provided
+            if name and not re.match(r'^[a-z][a-z0-9_-]*$', name):
+                raise ValueError(
+                    "Knowledge base name must start with a letter and contain only lowercase letters, "
+                    "numbers, underscores, and hyphens."
+                )
+            
+            # Check for duplicate name
+            if name and name != kb.name:
+                existing = self.get_knowledge_base(name)
+                if existing:
+                    raise ValueError(f"Knowledge base '{name}' already exists.")
+            
+            # Check collection uniqueness if changing
+            if collection and collection != kb.collection:
+                with get_sync_session() as session:
+                    existing_coll = session.execute(
+                        select(KnowledgeBaseDB).where(KnowledgeBaseDB.collection == collection)
+                    ).scalar_one_or_none()
+                    if existing_coll:
+                        raise ValueError(f"Collection '{collection}' is already used by another knowledge base.")
+            
+            with get_sync_session() as session:
+                db_kb = session.execute(
+                    select(KnowledgeBaseDB).where(KnowledgeBaseDB.id == kb.id)
+                ).scalar_one()
+                
+                if name is not None:
+                    db_kb.name = name
+                if description is not None:
+                    db_kb.description = description
+                if collection is not None:
+                    db_kb.collection = collection
+                if embedding_model is not None:
+                    db_kb.embedding_model = embedding_model
+                
+                db_kb.updated_at = datetime.utcnow()
+                session.commit()
+            
+            return self.get_knowledge_base(kb.id)
+
+    def delete_knowledge_base(self, kb_id: str) -> None:
+        """Delete a knowledge base by ID."""
+        with self._lock:
+            kb = self.get_knowledge_base(kb_id)
+            if not kb:
+                raise KeyError(f"Knowledge base '{kb_id}' not found.")
+            
+            # Prevent deleting the default KB
+            if kb.id == DEFAULT_KB_ID:
+                raise ValueError("Cannot delete the default knowledge base.")
+            
+            with get_sync_session() as session:
+                session.execute(
+                    delete(KnowledgeBaseDB).where(KnowledgeBaseDB.id == kb.id)
+                )
+                session.commit()
+
+    def _db_to_pydantic(self, db_kb: KnowledgeBaseDB) -> KnowledgeBase:
+        """Convert database model to Pydantic model."""
+        return KnowledgeBase(
+            id=db_kb.id,
+            name=db_kb.name,
+            description=db_kb.description,
+            collection=db_kb.collection,
+            embedding_model=db_kb.embedding_model,
+            created_at=db_kb.created_at.isoformat() + "Z" if db_kb.created_at else None,
+            updated_at=db_kb.updated_at.isoformat() + "Z" if db_kb.updated_at else None,
+        )
+
+
+# Global knowledge base store instance
+_kb_store: Optional[KnowledgeBaseStore] = None
+
+
+def get_kb_store() -> KnowledgeBaseStore:
+    """Get or create the global knowledge base store."""
+    global _kb_store
+    if _kb_store is None:
+        _kb_store = KnowledgeBaseStore()
+    return _kb_store

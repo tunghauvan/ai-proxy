@@ -5,11 +5,12 @@ import time
 import re
 import json
 import asyncio
+import logging
 from datetime import datetime
 from typing import Optional, List, AsyncGenerator, Any, Dict
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -19,6 +20,41 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, AIMe
 # Load environment variables
 load_dotenv()
 
+# Set up logging
+import os
+try:
+    # Create logs directory if it doesn't exist
+    os.makedirs('/app/logs', exist_ok=True)
+    
+    # Create a custom logger
+    logger = logging.getLogger('langchain_proxy')
+    logger.setLevel(logging.INFO)
+    
+    # Create file handler
+    file_handler = logging.FileHandler('/app/logs/app.log')
+    file_handler.setLevel(logging.INFO)
+    
+    # Create console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Add handlers to logger
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    # Test the logger
+    logger.info("Logging system initialized successfully")
+    print("Logging configured successfully")
+except Exception as e:
+    print(f"Failed to configure logging: {e}")
+    import traceback
+    traceback.print_exc()
+
 # Set up LangSmith tracing
 os.environ["LANGCHAIN_TRACING_V2"] = os.getenv("LANGSMITH_TRACING", "true")
 os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGSMITH_PROJECT", "open-chat-model")
@@ -26,7 +62,7 @@ os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGSMITH_API_KEY", "")
 
 DEFAULT_MODEL = os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud")
 
-from app.config import AVAILABLE_TOOL_NAMES, CustomModel, RagSettings, ModelVersionConfig, get_config_store, parse_model_identifier, get_tool_store, Tool
+from app.config import AVAILABLE_TOOL_NAMES, CustomModel, RagSettings, ModelVersionConfig, get_config_store, parse_model_identifier, get_tool_store, Tool, get_kb_store, KnowledgeBase
 from app.database import init_db_sync
 from app.graph import (
     graph,
@@ -34,6 +70,7 @@ from app.graph import (
     create_llm_for_model,
     get_active_tools,
     get_kb_stats,
+    list_kb_documents,
     is_rag_enabled,
     reload_knowledge_base,
     retrieve_relevant_context,
@@ -48,38 +85,38 @@ from langchain_core.documents import Document
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown"""
-    print("Starting LangGraph Proxy Server...")
-    print(f"Using model: {DEFAULT_MODEL}")
-    print(f"LangSmith Project: {os.getenv('LANGSMITH_PROJECT')}")
+    logger.info("Starting LangGraph Proxy Server...")
+    logger.info(f"Using model: {DEFAULT_MODEL}")
+    logger.info(f"LangSmith Project: {os.getenv('LANGSMITH_PROJECT')}")
     
     # Initialize PostgreSQL database
-    print("Initializing PostgreSQL database...")
+    logger.info("Initializing PostgreSQL database...")
     try:
         init_db_sync()
-        print("Database initialized successfully.")
+        logger.info("Database initialized successfully.")
         
         # Initialize config store (creates default model if needed)
         store = get_config_store()
         active_model = store.get_active_model()
-        print(f"Active model: {active_model.name} (v{active_model.version})")
+        logger.info(f"Active model: {active_model.name} (v{active_model.version})")
         
         # Initialize tool store (syncs builtin tools to database)
         tool_store = get_tool_store()
         tools = tool_store.list_tools()
-        print(f"Available tools: {len(tools)} ({len([t for t in tools if t.is_builtin])} builtin)")
+        logger.info(f"Available tools: {len(tools)} ({len([t for t in tools if t.is_builtin])} builtin)")
     except Exception as e:
-        print(f"Warning: Database initialization failed: {e}")
-        print("The server will continue but some features may not work correctly.")
+        logger.error(f"Database initialization failed: {e}")
+        logger.warning("The server will continue but some features may not work correctly.")
     
     # Initialize RAG
     if is_rag_enabled():
         kb_stats = get_kb_stats()
-        print(f"RAG enabled with {kb_stats.get('document_count', 0)} documents")
+        logger.info(f"RAG enabled with {kb_stats.get('document_count', 0)} documents")
     else:
-        print("RAG is disabled according to the active custom model configuration.")
+        logger.info("RAG is disabled according to the active custom model configuration.")
     
     yield
-    print("Shutting down LangGraph Proxy Server...")
+    logger.info("Shutting down LangGraph Proxy Server...")
 
 
 app = FastAPI(
@@ -278,6 +315,30 @@ class ToolListResponse(BaseModel):
     tools: List[str]
 
 
+class KnowledgeBaseCreateRequest(BaseModel):
+    name: str = Field(..., description="Knowledge base name (a-z, 0-9, _, -). Must start with letter.")
+    description: Optional[str] = Field(None, description="Optional description")
+    collection: Optional[str] = Field(None, description="Qdrant collection name (auto-generated if not provided)")
+    embedding_model: Optional[str] = Field(None, description="Optional embedding model override")
+
+
+class KnowledgeBaseUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, description="Knowledge base name")
+    description: Optional[str] = Field(None, description="Optional description")
+    collection: Optional[str] = Field(None, description="Qdrant collection name")
+    embedding_model: Optional[str] = Field(None, description="Optional embedding model override")
+
+
+class KnowledgeBaseResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str]
+    collection: str
+    embedding_model: Optional[str]
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
 def _build_model_response(model: CustomModel, active_model_ids: list[str]) -> CustomModelResponse:
     active_set = set(active_model_ids)
     return CustomModelResponse(
@@ -323,16 +384,120 @@ async def health():
     return {"status": "healthy"}
 
 
+# ========== KNOWLEDGE BASE MANAGEMENT ENDPOINTS ==========
+
+@app.get("/v1/admin/knowledge-bases", response_model=List[KnowledgeBaseResponse])
+async def list_admin_knowledge_bases():
+    """List all knowledge bases"""
+    kb_store = get_kb_store()
+    kbs = kb_store.list_knowledge_bases()
+    return [
+        KnowledgeBaseResponse(
+            id=kb.id,
+            name=kb.name,
+            description=kb.description,
+            collection=kb.collection,
+            embedding_model=kb.embedding_model,
+            created_at=kb.created_at,
+            updated_at=kb.updated_at
+        )
+        for kb in kbs
+    ]
+
+
+@app.post("/v1/admin/knowledge-bases", response_model=KnowledgeBaseResponse, status_code=201)
+async def create_admin_knowledge_base(request: KnowledgeBaseCreateRequest):
+    """Create a new knowledge base"""
+    kb_store = get_kb_store()
+    try:
+        kb = kb_store.create_knowledge_base(
+            name=request.name,
+            description=request.description,
+            collection=request.collection,
+            embedding_model=request.embedding_model,
+        )
+        return KnowledgeBaseResponse(
+            id=kb.id,
+            name=kb.name,
+            description=kb.description,
+            collection=kb.collection,
+            embedding_model=kb.embedding_model,
+            created_at=kb.created_at,
+            updated_at=kb.updated_at
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/v1/admin/knowledge-bases/{kb_id}", response_model=KnowledgeBaseResponse)
+async def get_admin_knowledge_base(kb_id: str):
+    """Get a knowledge base by ID"""
+    kb_store = get_kb_store()
+    kb = kb_store.get_knowledge_base(kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail=f"Knowledge base '{kb_id}' not found")
+    
+    return KnowledgeBaseResponse(
+        id=kb.id,
+        name=kb.name,
+        description=kb.description,
+        collection=kb.collection,
+        embedding_model=kb.embedding_model,
+        created_at=kb.created_at,
+        updated_at=kb.updated_at
+    )
+
+
+@app.put("/v1/admin/knowledge-bases/{kb_id}", response_model=KnowledgeBaseResponse)
+async def update_admin_knowledge_base(kb_id: str, request: KnowledgeBaseUpdateRequest):
+    """Update a knowledge base"""
+    kb_store = get_kb_store()
+    try:
+        kb = kb_store.update_knowledge_base(
+            kb_id=kb_id,
+            name=request.name,
+            description=request.description,
+            collection=request.collection,
+            embedding_model=request.embedding_model,
+        )
+        return KnowledgeBaseResponse(
+            id=kb.id,
+            name=kb.name,
+            description=kb.description,
+            collection=kb.collection,
+            embedding_model=kb.embedding_model,
+            created_at=kb.created_at,
+            updated_at=kb.updated_at
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/v1/admin/knowledge-bases/{kb_id}", status_code=204)
+async def delete_admin_knowledge_base(kb_id: str):
+    """Delete a knowledge base"""
+    kb_store = get_kb_store()
+    try:
+        kb_store.delete_knowledge_base(kb_id)
+        return None
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.get("/v1/rag/stats")
-async def rag_stats():
+async def rag_stats(kb_id: Optional[str] = None):
     """Get RAG knowledge base statistics"""
-    if not is_rag_enabled():
-        return {
-            "enabled": False,
-            "document_count": 0,
-            "message": "RAG is disabled for the active model. Enable a model with RAG turned on via /v1/admin/models.",
-        }
-    return get_kb_stats()
+    return get_kb_stats(kb_id)
+
+
+@app.get("/v1/rag/documents")
+async def rag_documents(kb_id: Optional[str] = None, limit: int = 50, offset: int = 0):
+    """List documents in the knowledge base"""
+    return list_kb_documents(kb_id, limit, offset)
 
 
 @app.get("/v1/admin/models", response_model=List[CustomModelResponse])
@@ -679,12 +844,11 @@ async def delete_admin_tool(tool_id: str):
 
 
 @app.post("/v1/rag/reload")
-async def rag_reload():
+async def rag_reload(kb_id: Optional[str] = None):
     """Reload the RAG knowledge base"""
     try:
-        ensure_rag_enabled()
-        reload_knowledge_base()
-        return {"status": "success", "message": "Knowledge base reloaded", "stats": get_kb_stats()}
+        reload_knowledge_base(kb_id)
+        return {"status": "success", "message": "Knowledge base reloaded", "stats": get_kb_stats(kb_id)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -706,11 +870,10 @@ class SearchResponse(BaseModel):
 
 
 @app.post("/v1/rag/search")
-async def rag_search(request: SearchRequest):
+async def rag_search(request: SearchRequest, kb_id: Optional[str] = None):
     """Search the knowledge base directly"""
     try:
-        ensure_rag_enabled()
-        docs = retrieve_relevant_context(request.query, k=request.top_k)
+        docs = retrieve_relevant_context(request.query, k=request.top_k, kb_id=kb_id)
         results = [
             SearchResult(
                 content=doc.page_content,
@@ -744,14 +907,13 @@ class ImportResponse(BaseModel):
 
 
 @app.post("/v1/rag/import/texts")
-async def rag_import_texts(request: ImportTextRequest):
+async def rag_import_texts(request: ImportTextRequest, kb_id: Optional[str] = None):
     """Import raw texts into the knowledge base"""
     try:
-        ensure_rag_enabled()
         metadatas = None
         if request.sources:
             metadatas = [{"source": s} for s in request.sources]
-        result = import_texts(request.texts, metadatas)
+        result = import_texts(request.texts, metadatas, kb_id)
         return ImportResponse(
             status="success",
             original_count=result["original_texts"],
@@ -762,15 +924,14 @@ async def rag_import_texts(request: ImportTextRequest):
 
 
 @app.post("/v1/rag/import/documents")
-async def rag_import_documents(request: ImportBatchRequest):
+async def rag_import_documents(request: ImportBatchRequest, kb_id: Optional[str] = None):
     """Import documents into the knowledge base"""
     try:
-        ensure_rag_enabled()
         docs = [
             Document(page_content=d.content, metadata={"source": d.source})
             for d in request.documents
         ]
-        result = import_documents(docs)
+        result = import_documents(docs, kb_id)
         return ImportResponse(
             status="success",
             original_count=result["original_documents"],
@@ -781,11 +942,10 @@ async def rag_import_documents(request: ImportBatchRequest):
 
 
 @app.delete("/v1/rag/clear")
-async def rag_clear():
+async def rag_clear(kb_id: Optional[str] = None):
     """Clear all documents from the knowledge base"""
     try:
-        ensure_rag_enabled()
-        result = clear_knowledge_base()
+        result = clear_knowledge_base(kb_id)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -891,6 +1051,7 @@ async def _stream_chat_response(
     request: ChatCompletionRequest,
     model_config_id: Optional[str],
     langchain_messages: list,
+    kb_id: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Generate SSE stream for chat completions using LangGraph streaming."""
     chat_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
@@ -914,7 +1075,7 @@ async def _stream_chat_response(
     # Stream from the graph
     try:
         async for event in graph.astream_events(
-            {"messages": langchain_messages, "model_config_id": model_config_id},
+            {"messages": langchain_messages, "model_config_id": model_config_id, "kb_id": kb_id},
             version="v2",
         ):
             kind = event.get("event")
@@ -981,7 +1142,7 @@ async def _stream_chat_response(
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
+async def chat_completions(request: ChatCompletionRequest, kb_id: Optional[str] = None, x_kb_id: Optional[str] = Header(None, alias="X-KB-ID")):
     """Chat completions endpoint - OpenAI compatible
     
     Supports model identifiers in formats:
@@ -989,7 +1150,15 @@ async def chat_completions(request: ChatCompletionRequest):
     - "model-name@1.0.0" - uses a specific version
     
     Supports streaming when stream=true is set in the request.
+    
+    KB selection can be specified via:
+    - kb_id query parameter
+    - X-KB-ID header
     """
+    # Use header value if query param not provided
+    if kb_id is None and x_kb_id is not None:
+        kb_id = x_kb_id
+        
     try:
         # Resolve model configuration
         model_config_id = _resolve_model_config(request.model)
@@ -1000,7 +1169,7 @@ async def chat_completions(request: ChatCompletionRequest):
         # Handle streaming request
         if request.stream:
             return StreamingResponse(
-                _stream_chat_response(request, model_config_id, langchain_messages),
+                _stream_chat_response(request, model_config_id, langchain_messages, kb_id),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -1012,7 +1181,8 @@ async def chat_completions(request: ChatCompletionRequest):
         # Non-streaming request - use regular invoke
         result = graph.invoke({
             "messages": langchain_messages,
-            "model_config_id": model_config_id
+            "model_config_id": model_config_id,
+            "kb_id": kb_id
         })
         
         # Get the last AI message

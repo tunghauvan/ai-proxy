@@ -158,6 +158,23 @@ class ToolDB(Base):
         return f"<ToolDB(id={self.id}, name={self.name})>"
 
 
+class KnowledgeBaseDB(Base):
+    """Database model for knowledge bases."""
+    
+    __tablename__ = "knowledge_bases"
+    
+    id = Column(String(36), primary_key=True)
+    name = Column(String(64), nullable=False, unique=True, index=True)
+    description = Column(Text, nullable=True)
+    collection = Column(String(255), nullable=False, unique=True)  # Qdrant collection name
+    embedding_model = Column(String(255), nullable=True)  # Optional per-KB embedding model
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def __repr__(self):
+        return f"<KnowledgeBaseDB(id={self.id}, name={self.name}, collection={self.collection})>"
+
+
 class SettingDB(Base):
     """Database model for key-value settings storage."""
     

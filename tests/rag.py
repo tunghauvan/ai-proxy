@@ -98,9 +98,21 @@ def setup_knowledge_base():
     print("\n[Setup] Initializing Knowledge Base:")
     print_separator()
     
+    # Create a test knowledge base
+    print("  Creating test knowledge base...")
+    response = requests.post(
+        f"{BASE_URL}/v1/admin/knowledge-bases",
+        json={"name": "test_kb", "description": "Test knowledge base for RAG testing"},
+        headers={"Content-Type": "application/json"}
+    )
+    response.raise_for_status()
+    kb_data = response.json()
+    kb_id = kb_data["id"]
+    print(f"  ✓ Created KB '{kb_id}' with collection '{kb_data['collection']}'")
+    
     # Clear existing documents
     print("  Clearing existing documents...")
-    response = requests.delete(f"{BASE_URL}/v1/rag/clear")
+    response = requests.delete(f"{BASE_URL}/v1/rag/clear?kb_id={kb_id}")
     if response.status_code == 200:
         print(f"  ✓ KB cleared: {response.json()}")
     else:
@@ -111,7 +123,7 @@ def setup_knowledge_base():
     # Import sample documents
     print("  Importing sample documents...")
     response = requests.post(
-        f"{BASE_URL}/v1/rag/import/documents",
+        f"{BASE_URL}/v1/rag/import/documents?kb_id={kb_id}",
         json={"documents": SAMPLE_DOCUMENTS},
         headers={"Content-Type": "application/json"}
     )
@@ -122,15 +134,15 @@ def setup_knowledge_base():
     
     time.sleep(2)  # Wait for indexing
     
-    return data
+    return data, kb_id
 
 
-def test_rag_stats():
+def test_rag_stats(kb_id):
     """Test the RAG stats endpoint"""
     print("\n[Test] RAG Stats:")
     print_separator()
     
-    response = requests.get(f"{BASE_URL}/v1/rag/stats")
+    response = requests.get(f"{BASE_URL}/v1/rag/stats?kb_id={kb_id}")
     response.raise_for_status()
     
     data = response.json()
@@ -145,14 +157,14 @@ def test_rag_stats():
     return data
 
 
-def test_rag_search():
+def test_rag_search(kb_id):
     """Test the RAG search endpoint"""
     print("\n[Test] RAG Search - Company Info:")
     print_separator()
     
     # Search for company info
     response = requests.post(
-        f"{BASE_URL}/v1/rag/search",
+        f"{BASE_URL}/v1/rag/search?kb_id={kb_id}",
         json={"query": "What is the pricing for Acme products?", "top_k": 3}
     )
     response.raise_for_status()
@@ -176,13 +188,13 @@ def test_rag_search():
     return data
 
 
-def test_rag_search_technical():
+def test_rag_search_technical(kb_id):
     """Test RAG search for technical documentation"""
     print("\n[Test] RAG Search - Technical Docs:")
     print_separator()
     
     response = requests.post(
-        f"{BASE_URL}/v1/rag/search",
+        f"{BASE_URL}/v1/rag/search?kb_id={kb_id}",
         json={"query": "How do I authenticate API requests?", "top_k": 3}
     )
     response.raise_for_status()
@@ -201,13 +213,13 @@ def test_rag_search_technical():
     return data
 
 
-def test_rag_search_faq():
+def test_rag_search_faq(kb_id):
     """Test RAG search for FAQ content"""
     print("\n[Test] RAG Search - FAQ:")
     print_separator()
     
     response = requests.post(
-        f"{BASE_URL}/v1/rag/search",
+        f"{BASE_URL}/v1/rag/search?kb_id={kb_id}",
         json={"query": "What file formats are supported?", "top_k": 3}
     )
     response.raise_for_status()
@@ -226,27 +238,27 @@ def test_rag_search_faq():
     return data
 
 
-def test_chat_with_rag_context():
+def test_chat_with_rag_context(kb_id):
     """Test chat completion that should use RAG context"""
     print("\n[Test] Chat with RAG Context:")
     print_separator()
     
-    client = OpenAI(
-        api_key="not-needed",
-        base_url=f"{BASE_URL}/v1",
+    response = requests.post(
+        f"{BASE_URL}/v1/chat/completions",
+        json={
+            "model": os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud"),
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant for Acme Corporation. Answer questions based on the company's knowledge base."},
+                {"role": "user", "content": "What pricing plans does Acme offer?"},
+            ],
+            "temperature": 0.3,
+        },
+        headers={"X-KB-ID": kb_id, "Content-Type": "application/json"}
     )
+    response.raise_for_status()
     
-    # Ask about something in the knowledge base
-    response = client.chat.completions.create(
-        model=os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud"),
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant for Acme Corporation. Answer questions based on the company's knowledge base."},
-            {"role": "user", "content": "What pricing plans does Acme offer?"},
-        ],
-        temperature=0.3,  # Lower temperature for more deterministic responses
-    )
-    
-    content = response.choices[0].message.content
+    data = response.json()
+    content = data["choices"][0]["message"]["content"]
     print(f"  Response: {content[:500]}...")
     
     # The response should mention pricing info from the KB
@@ -260,26 +272,27 @@ def test_chat_with_rag_context():
     return response
 
 
-def test_chat_company_info():
+def test_chat_company_info(kb_id):
     """Test chat asking about company information"""
     print("\n[Test] Chat - Company Information:")
     print_separator()
     
-    client = OpenAI(
-        api_key="not-needed",
-        base_url=f"{BASE_URL}/v1",
+    response = requests.post(
+        f"{BASE_URL}/v1/chat/completions",
+        json={
+            "model": os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud"),
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant for Acme Corporation."},
+                {"role": "user", "content": "Who is the CEO of Acme Corporation?"},
+            ],
+            "temperature": 0.3,
+        },
+        headers={"X-KB-ID": kb_id, "Content-Type": "application/json"}
     )
+    response.raise_for_status()
     
-    response = client.chat.completions.create(
-        model=os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud"),
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant for Acme Corporation."},
-            {"role": "user", "content": "Who is the CEO of Acme Corporation?"},
-        ],
-        temperature=0.3,
-    )
-    
-    content = response.choices[0].message.content
+    data = response.json()
+    content = data["choices"][0]["message"]["content"]
     print(f"  Response: {content}")
     
     # Should mention Jane Smith (from knowledge base)
@@ -290,26 +303,27 @@ def test_chat_company_info():
     return response
 
 
-def test_chat_technical_question():
+def test_chat_technical_question(kb_id):
     """Test chat with technical question from docs"""
     print("\n[Test] Chat - Technical Question:")
     print_separator()
     
-    client = OpenAI(
-        api_key="not-needed",
-        base_url=f"{BASE_URL}/v1",
+    response = requests.post(
+        f"{BASE_URL}/v1/chat/completions",
+        json={
+            "model": os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud"),
+            "messages": [
+                {"role": "system", "content": "You are a technical support assistant for Acme Corporation."},
+                {"role": "user", "content": "What is the maximum document size I can upload to AcmeAI?"},
+            ],
+            "temperature": 0.3,
+        },
+        headers={"X-KB-ID": kb_id, "Content-Type": "application/json"}
     )
+    response.raise_for_status()
     
-    response = client.chat.completions.create(
-        model=os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud"),
-        messages=[
-            {"role": "system", "content": "You are a technical support assistant for Acme Corporation."},
-            {"role": "user", "content": "What is the maximum document size I can upload to AcmeAI?"},
-        ],
-        temperature=0.3,
-    )
-    
-    content = response.choices[0].message.content
+    data = response.json()
+    content = data["choices"][0]["message"]["content"]
     print(f"  Response: {content}")
     
     # Should mention 100MB (from FAQ)
@@ -320,12 +334,12 @@ def test_chat_technical_question():
     return response
 
 
-def test_rag_reload():
+def test_rag_reload(kb_id):
     """Test reloading the RAG knowledge base"""
     print("\n[Test] RAG Reload:")
     print_separator()
     
-    response = requests.post(f"{BASE_URL}/v1/rag/reload")
+    response = requests.post(f"{BASE_URL}/v1/rag/reload?kb_id={kb_id}")
     response.raise_for_status()
     
     data = response.json()
@@ -349,20 +363,20 @@ def run_all_tests():
     
     # Setup: Import sample documents
     try:
-        setup_knowledge_base()
+        setup_data, kb_id = setup_knowledge_base()
     except Exception as e:
         print(f"\n❌ Setup failed: {e}")
         return False
     
     tests = [
-        ("RAG Stats", test_rag_stats),
-        ("RAG Search - Company", test_rag_search),
-        ("RAG Search - Technical", test_rag_search_technical),
-        ("RAG Search - FAQ", test_rag_search_faq),
-        ("Chat with RAG", test_chat_with_rag_context),
-        ("Chat - Company Info", test_chat_company_info),
-        ("Chat - Technical", test_chat_technical_question),
-        ("RAG Reload", test_rag_reload),
+        ("RAG Stats", lambda: test_rag_stats(kb_id)),
+        ("RAG Search - Company", lambda: test_rag_search(kb_id)),
+        ("RAG Search - Technical", lambda: test_rag_search_technical(kb_id)),
+        ("RAG Search - FAQ", lambda: test_rag_search_faq(kb_id)),
+        ("Chat with RAG", lambda: test_chat_with_rag_context(kb_id)),
+        ("Chat - Company Info", lambda: test_chat_company_info(kb_id)),
+        ("Chat - Technical", lambda: test_chat_technical_question(kb_id)),
+        ("RAG Reload", lambda: test_rag_reload(kb_id)),
     ]
     
     results = []

@@ -17,7 +17,7 @@ from qdrant_client.http import models as qdrant_models
 import operator
 import httpx
 from pydantic import BaseModel, Field, create_model
-from app.config import get_active_model, get_config_store, get_tool_store
+from app.config import get_active_model, get_config_store, get_tool_store, get_kb_store, KnowledgeBase
 
 # RAG Configuration helpers live inside the admin config store
 def is_rag_enabled(model_id: Optional[str] = None) -> bool:
@@ -80,11 +80,20 @@ def get_embeddings() -> OpenAIEmbeddings:
     return _embeddings
 
 
-def ensure_collection_exists(model_id: Optional[str] = None):
+def ensure_collection_exists(kb_id: Optional[str] = None):
     """Ensure Qdrant collection exists, create if not"""
     client = get_qdrant_client()
-    rag_settings = get_rag_settings(model_id)
-    collection_name = rag_settings.collection
+    
+    # Get collection name from KB or use default
+    if kb_id:
+        kb = get_kb_store().get_knowledge_base(kb_id)
+        if not kb:
+            raise ValueError(f"Knowledge base '{kb_id}' not found")
+        collection_name = kb.collection
+    else:
+        # Default collection for backwards compatibility
+        collection_name = os.getenv("QDRANT_COLLECTION", "knowledge_base")
+    
     collections = client.get_collections().collections
     collection_names = [c.name for c in collections]
     
@@ -104,14 +113,19 @@ def ensure_collection_exists(model_id: Optional[str] = None):
     return True
 
 
-def get_vector_store(model_id: Optional[str] = None) -> Optional[QdrantVectorStore]:
-    """Get or create the vector store for a specific model or active model"""
+def get_vector_store(kb_id: Optional[str] = None) -> Optional[QdrantVectorStore]:
+    """Get or create the vector store for a specific knowledge base"""
     global _vector_store
     
-    rag_settings = get_rag_settings(model_id)
-    if not rag_settings.enabled:
-        return None
-    collection_name = rag_settings.collection
+    # Get collection name from KB or use default
+    if kb_id:
+        kb = get_kb_store().get_knowledge_base(kb_id)
+        if not kb:
+            return None
+        collection_name = kb.collection
+    else:
+        # Default collection for backwards compatibility
+        collection_name = os.getenv("QDRANT_COLLECTION", "knowledge_base")
     
     # Check if we need a different collection than the cached one
     if _vector_store is not None:
@@ -125,7 +139,7 @@ def get_vector_store(model_id: Optional[str] = None) -> Optional[QdrantVectorSto
     
     if _vector_store is None:
         try:
-            ensure_collection_exists(model_id)
+            ensure_collection_exists(kb_id)
             embeddings = get_embeddings()
             _vector_store = QdrantVectorStore(
                 client=get_qdrant_client(),
@@ -140,12 +154,16 @@ def get_vector_store(model_id: Optional[str] = None) -> Optional[QdrantVectorSto
     return _vector_store
 
 
-def retrieve_relevant_context(query: str, k: Optional[int] = None, model_id: Optional[str] = None) -> List[Document]:
+def retrieve_relevant_context(query: str, k: Optional[int] = None, kb_id: Optional[str] = None) -> List[Document]:
     """Retrieve relevant documents for a query"""
     if k is None:
-        k = get_rag_settings(model_id).top_k
+        # Use default k if no kb_id, or get from model if kb_id not provided
+        if kb_id:
+            k = 3  # Default for KB-specific queries
+        else:
+            k = get_rag_settings().top_k
     
-    vector_store = get_vector_store(model_id)
+    vector_store = get_vector_store(kb_id)
     if vector_store is None:
         return []
     
@@ -175,6 +193,7 @@ class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
     context: Optional[str]  # Retrieved RAG context
     model_config_id: Optional[str]  # Custom model ID for per-request config
+    kb_id: Optional[str]  # Knowledge base ID for per-request KB selection
 
 
 # Define builtin tools
@@ -258,7 +277,54 @@ def _create_dynamic_tool(tool_config) -> Optional[StructuredTool]:
     tool_name = tool_config.name
     tool_description = tool_config.description
     function_code = tool_config.function_code
-    parameters = tool_config.parameters
+    parameters = list(tool_config.parameters)  # Make a copy to avoid mutation issues
+    
+    # If no parameters defined, try to infer from function signature
+    if not parameters:
+        import ast
+        try:
+            tree = ast.parse(function_code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    # Found a function, extract parameters
+                    for arg in node.args.args:
+                        param_name = arg.arg
+                        # Try to get type annotation
+                        param_type = "string"  # default
+                        if arg.annotation:
+                            if isinstance(arg.annotation, ast.Name):
+                                type_name = arg.annotation.id.lower()
+                                if type_name in ("str", "string"):
+                                    param_type = "string"
+                                elif type_name in ("int", "integer"):
+                                    param_type = "integer"
+                                elif type_name in ("float", "number"):
+                                    param_type = "number"
+                                elif type_name in ("bool", "boolean"):
+                                    param_type = "boolean"
+                                elif type_name in ("list", "array"):
+                                    param_type = "array"
+                                elif type_name in ("dict", "object"):
+                                    param_type = "object"
+                        
+                        # Create a simple param object
+                        class InferredParam:
+                            def __init__(self, name, ptype, desc, required, default):
+                                self.name = name
+                                self.type = ptype
+                                self.description = desc
+                                self.required = required
+                                self.default = default
+                        
+                        p = InferredParam(param_name, param_type, f"Parameter: {param_name}", True, None)
+                        parameters.append(p)
+                    break
+        except Exception as e:
+            print(f"Warning: Could not infer parameters from function code: {e}")
+    
+    # Debug: print inferred parameters
+    if parameters:
+        print(f"Tool '{tool_name}' has {len(parameters)} parameters: {[p.name for p in parameters]}")
     
     # Build pydantic model for parameters
     field_definitions = {}
@@ -288,71 +354,67 @@ def _create_dynamic_tool(tool_config) -> Optional[StructuredTool]:
     # Create dynamic pydantic model for args
     if field_definitions:
         ArgsModel = create_model(f"{tool_name}_args", **field_definitions)
+        print(f"Tool '{tool_name}' ArgsModel created with schema: {ArgsModel.model_json_schema()}")
     else:
         ArgsModel = None
+        print(f"Tool '{tool_name}' has no ArgsModel (no field_definitions)")
     
-    def execute_custom_tool(**kwargs) -> str:
-        """Execute the custom tool code."""
-        try:
-            # Create safe execution context
-            safe_globals = _create_safe_execution_context()
-            safe_locals = {}
-            
-            # Execute the function code to define the function
-            exec(function_code, safe_globals, safe_locals)
-            
-            # Find the main function (should be named same as tool or 'main' or 'run')
-            func = None
-            for name in [tool_name, "main", "run", "execute"]:
-                if name in safe_locals and callable(safe_locals[name]):
-                    func = safe_locals[name]
-                    break
-            
-            # If no named function found, look for any callable
-            if func is None:
-                for name, obj in safe_locals.items():
-                    if callable(obj) and not name.startswith("_"):
-                        func = obj
+    # Build a wrapper function with the correct signature
+    # We need to capture the function_code and tool_name in the closure
+    param_names = [p.name for p in parameters] if parameters else []
+    
+    def make_executor(fn_code, t_name, p_names):
+        def execute_custom_tool(**kwargs) -> str:
+            """Execute the custom tool code."""
+            try:
+                # Create safe execution context
+                safe_globals = _create_safe_execution_context()
+                safe_locals = {}
+                
+                # Execute the function code to define the function
+                exec(fn_code, safe_globals, safe_locals)
+                
+                # Find the main function (should be named same as tool or 'main' or 'run')
+                func = None
+                for name in [t_name, "main", "run", "execute"]:
+                    if name in safe_locals and callable(safe_locals[name]):
+                        func = safe_locals[name]
                         break
-            
-            if func is None:
-                return f"Error: No executable function found in tool code. Define a function named '{tool_name}', 'main', 'run', or 'execute'."
-            
-            # Check function signature to determine how to call it
-            import inspect
-            sig = inspect.signature(func)
-            
-            # If function accepts **kwargs or has parameters that match kwargs, use kwargs
-            if any(param.kind == param.VAR_KEYWORD for param in sig.parameters.values()) or \
-               any(param.name in kwargs for param in sig.parameters.values()):
+                
+                # If no named function found, look for any callable
+                if func is None:
+                    for name, obj in safe_locals.items():
+                        if callable(obj) and not name.startswith("_"):
+                            func = obj
+                            break
+                
+                if func is None:
+                    return f"Error: No executable function found in tool code. Define a function named '{t_name}', 'main', 'run', or 'execute'."
+                
+                # Call the function with the provided kwargs
                 result = func(**kwargs)
-            # If function has no parameters, call without arguments
-            elif not sig.parameters:
-                result = func()
-            else:
-                # Function has specific parameters but none match kwargs - try to call with matching args
-                matching_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
-                if matching_kwargs:
-                    result = func(**matching_kwargs)
-                else:
-                    result = func()
-            
-            return str(result) if result is not None else "Tool executed successfully."
-            
-        except Exception as e:
-            return f"Error executing tool: {str(e)}"
+                
+                return str(result) if result is not None else "Tool executed successfully."
+                
+            except Exception as e:
+                import traceback
+                return f"Error executing tool: {str(e)}\n{traceback.format_exc()}"
+        
+        return execute_custom_tool
     
-    # Create the structured tool
+    executor = make_executor(function_code, tool_name, param_names)
+    
+    # Create the structured tool - use StructuredTool directly to ensure args_schema is respected
     if ArgsModel:
-        return StructuredTool.from_function(
-            func=execute_custom_tool,
+        return StructuredTool(
+            func=executor,
             name=tool_name,
             description=tool_description,
             args_schema=ArgsModel,
         )
     else:
         return StructuredTool.from_function(
-            func=execute_custom_tool,
+            func=executor,
             name=tool_name,
             description=tool_description,
         )
@@ -480,6 +542,7 @@ def create_llm_for_model(model_id: Optional[str] = None) -> ChatOpenAI:
 def retrieval_node(state: AgentState) -> dict:
     """Node that retrieves relevant context from the knowledge base"""
     model_id = state.get("model_config_id")
+    kb_id = state.get("kb_id")
     
     if not is_rag_enabled(model_id):
         return {"context": None}
@@ -496,8 +559,8 @@ def retrieval_node(state: AgentState) -> dict:
     if not last_human_msg:
         return {"context": None}
     
-    # Retrieve relevant documents using model-specific settings
-    docs = retrieve_relevant_context(last_human_msg, model_id=model_id)
+    # Retrieve relevant documents using KB-specific settings
+    docs = retrieve_relevant_context(last_human_msg, kb_id=kb_id)
     context = format_context(docs)
     
     return {"context": context}
@@ -615,16 +678,16 @@ graph = create_graph()
 
 
 # Utility functions for managing the knowledge base
-def reload_knowledge_base():
+def reload_knowledge_base(kb_id: Optional[str] = None):
     """Force reload of the vector store connection"""
     global _vector_store
     _vector_store = None
-    return get_vector_store()
+    return get_vector_store(kb_id)
 
 
-def import_documents(documents: List[Document]) -> dict:
+def import_documents(documents: List[Document], kb_id: Optional[str] = None) -> dict:
     """Import documents into the knowledge base via API"""
-    vector_store = get_vector_store()
+    vector_store = get_vector_store(kb_id)
     if vector_store is None:
         raise ValueError("Vector store not initialized. Check Qdrant connection.")
     
@@ -644,9 +707,9 @@ def import_documents(documents: List[Document]) -> dict:
     }
 
 
-def import_texts(texts: List[str], metadatas: Optional[List[dict]] = None) -> dict:
+def import_texts(texts: List[str], metadatas: Optional[List[dict]] = None, kb_id: Optional[str] = None) -> dict:
     """Import raw texts into the knowledge base"""
-    vector_store = get_vector_store()
+    vector_store = get_vector_store(kb_id)
     if vector_store is None:
         raise ValueError("Vector store not initialized. Check Qdrant connection.")
     
@@ -672,33 +735,49 @@ def import_texts(texts: List[str], metadatas: Optional[List[dict]] = None) -> di
     }
 
 
-def clear_knowledge_base() -> dict:
+def clear_knowledge_base(kb_id: Optional[str] = None) -> dict:
     """Clear all documents from the knowledge base"""
     client = get_qdrant_client()
+    
+    # Get collection name from KB or use default
+    if kb_id:
+        kb = get_kb_store().get_knowledge_base(kb_id)
+        if not kb:
+            raise ValueError(f"Knowledge base '{kb_id}' not found")
+        collection_name = kb.collection
+    else:
+        # Default collection for backwards compatibility
+        collection_name = os.getenv("QDRANT_COLLECTION", "knowledge_base")
+    
     try:
-        collection_name = get_rag_settings().collection
         client.delete_collection(collection_name=collection_name)
         # Reset global vector store to force re-creation
         global _vector_store
         _vector_store = None
-        ensure_collection_exists()
+        ensure_collection_exists(kb_id)
         return {"status": "success", "message": f"Collection '{collection_name}' cleared"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 
-def get_kb_stats() -> dict:
+def get_kb_stats(kb_id: Optional[str] = None) -> dict:
     """Get statistics about the knowledge base"""
-    rag_settings = get_rag_settings()
-    if not rag_settings.enabled:
-        return {"enabled": False, "document_count": 0}
+    # Get collection name from KB or use default
+    if kb_id:
+        kb = get_kb_store().get_knowledge_base(kb_id)
+        if not kb:
+            return {"enabled": False, "document_count": 0, "error": f"Knowledge base '{kb_id}' not found"}
+        collection_name = kb.collection
+    else:
+        # Default collection for backwards compatibility
+        collection_name = os.getenv("QDRANT_COLLECTION", "knowledge_base")
     
     try:
         client = get_qdrant_client()
-        collection_info = client.get_collection(collection_name=rag_settings.collection)
+        collection_info = client.get_collection(collection_name=collection_name)
         return {
             "enabled": True,
-            "collection": rag_settings.collection,
+            "collection": collection_name,
             "document_count": collection_info.points_count,
             "status": collection_info.status.value,
             "qdrant_host": QDRANT_HOST,
@@ -707,3 +786,55 @@ def get_kb_stats() -> dict:
         }
     except Exception as e:
         return {"enabled": True, "document_count": 0, "error": str(e)}
+
+
+def list_kb_documents(kb_id: Optional[str] = None, limit: int = 100, offset: int = 0) -> dict:
+    """List documents in the knowledge base"""
+    # Get collection name from KB or use default
+    if kb_id:
+        kb = get_kb_store().get_knowledge_base(kb_id)
+        if not kb:
+            return {"error": f"Knowledge base '{kb_id}' not found", "documents": []}
+        collection_name = kb.collection
+    else:
+        # Default collection for backwards compatibility
+        collection_name = os.getenv("QDRANT_COLLECTION", "knowledge_base")
+    
+    try:
+        client = get_qdrant_client()
+        
+        # Check if collection exists
+        try:
+            collection_info = client.get_collection(collection_name=collection_name)
+        except Exception:
+            return {"error": f"Collection '{collection_name}' not found", "documents": []}
+        
+        # Query points with payload (metadata)
+        points = client.scroll(
+            collection_name=collection_name,
+            limit=limit,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        documents = []
+        for point in points[0]:  # points[0] contains the actual points
+            payload = point.payload or {}
+            documents.append({
+                "id": point.id,
+                "content": payload.get("page_content", ""),
+                "source": payload.get("metadata", {}).get("source", "unknown"),
+                "metadata": payload.get("metadata", {})
+            })
+        
+        return {
+            "collection": collection_name,
+            "total_count": collection_info.points_count,
+            "returned_count": len(documents),
+            "limit": limit,
+            "offset": offset,
+            "documents": documents
+        }
+    except Exception as e:
+        return {"error": str(e), "documents": []}
