@@ -134,7 +134,7 @@ Access the web-based admin interface at `http://localhost:3000` to:
 
 ```
 langchain-proxy/
-├── src/langchain_proxy/
+├── src/server/
 │   ├── server/          # FastAPI application
 │   │   ├── main.py      # Server entry point
 │   │   ├── config.py    # Configuration management
@@ -179,7 +179,7 @@ pytest tests/test_unit/
 pytest tests/test_integration/
 
 # All tests with coverage
-pytest --cov=langchain_proxy
+pytest --cov=server
 ```
 
 ### Building Documentation

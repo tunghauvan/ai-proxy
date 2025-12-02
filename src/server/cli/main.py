@@ -16,7 +16,7 @@ import yaml
 load_dotenv()
 
 # Default configuration
-DEFAULT_BASE_URL = os.getenv("LANGCHAIN_PROXY_URL", "http://localhost:8000")
+DEFAULT_BASE_URL = os.getenv("SERVER_URL", "http://localhost:8000")
 DEFAULT_MODEL = os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud")
 
 
@@ -1311,8 +1311,8 @@ def logs_clear(config, before_days, yes):
 def server_command(host, port, reload, workers, init_db):
     """Start the LangChain Proxy server"""
     import uvicorn
-    from langchain_proxy.server.main import app, lifespan
-    from langchain_proxy.server.database import init_db_sync
+    from server.server.main import app, lifespan
+    from server.server.database import init_db_sync
 
     if init_db:
         click.echo("Initializing database...")
@@ -1328,7 +1328,7 @@ def server_command(host, port, reload, workers, init_db):
         click.echo("Auto-reload enabled")
 
     uvicorn.run(
-        "langchain_proxy.server.main:app",
+        "server.server.main:app",
         host=host,
         port=port,
         reload=reload,
@@ -1353,8 +1353,8 @@ def shell_command(config):
     """Open a Python shell with the project loaded"""
     try:
         import IPython
-        from langchain_proxy.server.config import get_config_store, get_tool_store, get_kb_store
-        from langchain_proxy.core.graph import graph, create_llm_for_model
+        from server.server.config import get_config_store, get_tool_store, get_kb_store
+        from server.core.graph import graph, create_llm_for_model
         
         click.echo("Loading project modules...")
         user_ns = {

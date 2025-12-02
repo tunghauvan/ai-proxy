@@ -29,7 +29,7 @@ test-e2e: ## Run end-to-end tests only
 	pytest tests/e2e/
 
 test-coverage: ## Run tests with coverage
-	pytest --cov=langchain_proxy --cov-report=html --cov-report=term
+	pytest --cov=server --cov-report=html --cov-report=term
 
 # Code quality
 lint: ## Run linting
@@ -71,10 +71,10 @@ docs-serve: ## Serve documentation locally
 
 # Development server
 serve: ## Start the development server
-	uvicorn langchain_proxy.server.main:app --reload --host 0.0.0.0 --port 8000
+	uvicorn server.server.main:app --reload --host 0.0.0.0 --port 8000
 
 serve-prod: ## Start the production server
-	uvicorn langchain_proxy.server.main:app --host 0.0.0.0 --port 8000 --workers 4
+	uvicorn server.server.main:app --host 0.0.0.0 --port 8000 --workers 4
 
 # Docker
 docker-build: ## Build Docker images

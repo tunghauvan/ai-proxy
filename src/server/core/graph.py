@@ -17,7 +17,7 @@ from qdrant_client.http import models as qdrant_models
 import operator
 import httpx
 from pydantic import BaseModel, Field, create_model
-from langchain_proxy.server.config import get_active_model, get_config_store, get_tool_store, get_kb_store, KnowledgeBase
+from server.server.config import get_active_model, get_config_store, get_tool_store, get_kb_store, KnowledgeBase
 
 # RAG Configuration helpers live inside the admin config store
 def is_rag_enabled(model_id: Optional[str] = None) -> bool:

@@ -67,9 +67,9 @@ docs = [
 ]
 
 [project.scripts]
-langchain-proxy = "langchain_proxy.cli.main:cli"
-lcp = "langchain_proxy.cli.main:cli"
-langchain-proxy-server = "langchain_proxy.cli.main:server_command"
+langchain-proxy = "server.cli.main:cli"
+lcp = "server.cli.main:cli"
+langchain-proxy-server = "server.cli.main:server_command"
 
 [project.urls]
 Homepage = "https://github.com/tunghauvan/langchain-proxy"
@@ -86,7 +86,7 @@ where = ["src"]
 exclude = ["tests*", "docs*"]
 
 [tool.setuptools.package-data]
-langchain_proxy = ["data/**/*", "config/**/*"]
+server = ["data/**/*", "config/**/*"]
 
 [tool.black]
 line-length = 88
@@ -110,7 +110,7 @@ extend-exclude = '''
 profile = "black"
 multi_line_output = 3
 line_length = 88
-known_first_party = ["langchain_proxy"]
+known_first_party = ["server"]
 known_third_party = [
     "fastapi",
     "uvicorn",

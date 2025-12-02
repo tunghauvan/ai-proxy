@@ -27,7 +27,7 @@ try:
     os.makedirs('/app/logs', exist_ok=True)
     
     # Create a custom logger
-    logger = logging.getLogger('langchain_proxy')
+    logger = logging.getLogger('server')
     logger.setLevel(logging.INFO)
     
     # Create file handler
@@ -62,9 +62,9 @@ os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGSMITH_API_KEY", "")
 
 DEFAULT_MODEL = os.getenv("OLLAMA_API_MODEL", "gpt-oss:20b-cloud")
 
-from langchain_proxy.server.config import AVAILABLE_TOOL_NAMES, CustomModel, RagSettings, ModelVersionConfig, get_config_store, parse_model_identifier, get_tool_store, Tool, get_kb_store, KnowledgeBase
-from langchain_proxy.server.database import init_db_sync, ChatLogService, ChatLogDB
-from langchain_proxy.core.graph import (
+from server.server.config import AVAILABLE_TOOL_NAMES, CustomModel, RagSettings, ModelVersionConfig, get_config_store, parse_model_identifier, get_tool_store, Tool, get_kb_store, KnowledgeBase
+from server.server.database import init_db_sync, ChatLogService, ChatLogDB
+from server.core.graph import (
     graph,
     create_ollama_llm,
     create_llm_for_model,
