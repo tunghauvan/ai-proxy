@@ -30,9 +30,15 @@ export default {
   getKBs: () => api.get('/admin/knowledge-bases'),
   getKB: (id) => api.get(`/admin/knowledge-bases/${id}`),
   createKB: (data) => api.post('/admin/knowledge-bases', data),
+  updateKB: (id, data) => api.put(`/admin/knowledge-bases/${id}`, data),
   deleteKB: (id) => api.delete(`/admin/knowledge-bases/${id}`),
-  getKBDocuments: (id, limit = 20, offset = 0) => api.get(`/rag/documents`, { params: { kb_id: id, limit, offset } }),
+  getKBDocuments: (id, limit = 50, offset = 0) => api.get(`/rag/documents`, { params: { kb_id: id, limit, offset } }),
+  getKBStats: (id) => api.get(`/rag/stats`, { params: { kb_id: id } }),
   clearKB: (id) => api.delete(`/rag/clear`, { params: { kb_id: id } }),
+  reloadKB: (id) => api.post(`/rag/reload`, null, { params: { kb_id: id } }),
+  searchKB: (id, query, topK = 5) => api.post(`/rag/search`, { query, top_k: topK }, { params: { kb_id: id } }),
+  importTexts: (id, texts, sources) => api.post(`/rag/import/texts`, { texts, sources }, { params: { kb_id: id } }),
+  importDocuments: (id, documents) => api.post(`/rag/import/documents`, { documents }, { params: { kb_id: id } }),
   
   // Chat
   chatCompletion: (data) => api.post('/chat/completions', data),

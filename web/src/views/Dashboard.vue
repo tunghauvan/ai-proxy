@@ -40,7 +40,7 @@ onMounted(() => {
       <div class="text-muted-foreground">Loading dashboard...</div>
     </div>
     
-    <div v-else class="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
+    <div v-else class="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
       <div class="rounded-xl border bg-card text-card-foreground shadow-sm p-6">
         <div class="flex flex-row items-center justify-between space-y-0 pb-2">
           <h3 class="tracking-tight text-sm font-medium">Total Requests</h3>
@@ -93,8 +93,8 @@ onMounted(() => {
       </div>
     </div>
 
-    <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
-      <div class="col-span-4 rounded-xl border bg-card text-card-foreground shadow-sm">
+    <div class="grid gap-6 md:grid-cols-2">
+      <div class="rounded-xl border bg-card text-card-foreground shadow-sm">
         <div class="flex flex-col space-y-1.5 p-6">
           <h3 class="font-semibold leading-none tracking-tight">Models Used</h3>
         </div>
@@ -111,7 +111,7 @@ onMounted(() => {
         </div>
       </div>
       
-      <div class="col-span-3 rounded-xl border bg-card text-card-foreground shadow-sm">
+      <div class="rounded-xl border bg-card text-card-foreground shadow-sm">
         <div class="flex flex-col space-y-1.5 p-6">
           <h3 class="font-semibold leading-none tracking-tight">Tools Used</h3>
         </div>

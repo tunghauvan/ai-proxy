@@ -97,7 +97,7 @@ const toggleSidebar = () => {
         </div>
       </header>
 
-      <main class="flex-1 overflow-y-auto bg-background p-6">
+      <main class="flex-1 overflow-y-auto bg-background p-4 lg:p-6">
         <router-view></router-view>
       </main>
     </div>

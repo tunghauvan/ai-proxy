@@ -117,55 +117,62 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="flex flex-col h-[calc(100vh-10rem)]">
-    <div class="flex items-center justify-between mb-4">
-      <h2 class="text-3xl font-bold tracking-tight">Chat</h2>
-      <div class="flex gap-2">
-        <select v-model="selectedKB" class="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
-          <option value="">No Knowledge Base</option>
-          <option v-for="kb in kbs" :key="kb.id" :value="kb.id">{{ kb.name }}</option>
-        </select>
-        <select v-model="selectedModel" class="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
-          <option v-for="model in models" :key="model.id" :value="model.name">{{ model.name }}</option>
-        </select>
+  <div class="flex flex-col h-[calc(100vh-10rem)] max-w-5xl mx-auto w-full">
+    <div class="flex items-center justify-between mb-6">
+      <h2 class="text-2xl font-bold tracking-tight">Chat</h2>
+      <div class="flex gap-3">
+        <div class="relative">
+          <select v-model="selectedKB" class="h-9 w-[200px] rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <option value="">No Knowledge Base</option>
+            <option v-for="kb in kbs" :key="kb.id" :value="kb.id">{{ kb.name }}</option>
+          </select>
+        </div>
+        <div class="relative">
+          <select v-model="selectedModel" class="h-9 w-[200px] rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <option v-for="model in models" :key="model.id" :value="model.name">{{ model.name }}</option>
+          </select>
+        </div>
       </div>
     </div>
 
-    <div class="flex-1 rounded-md border bg-card flex flex-col overflow-hidden">
-      <div ref="messagesContainer" class="flex-1 overflow-y-auto p-4 space-y-4">
-        <div v-if="messages.length === 0" class="flex h-full items-center justify-center text-muted-foreground">
-          Start a conversation...
+    <div class="flex-1 rounded-xl border bg-card shadow-sm flex flex-col overflow-hidden">
+      <div ref="messagesContainer" class="flex-1 overflow-y-auto p-6 space-y-6">
+        <div v-if="messages.length === 0" class="flex h-full flex-col items-center justify-center text-muted-foreground space-y-4">
+          <div class="p-4 rounded-full bg-muted/50">
+            <MessageSquare class="h-8 w-8" />
+          </div>
+          <p>Start a conversation with the AI assistant</p>
         </div>
-        <div v-for="(msg, index) in messages" :key="index" class="flex gap-3" :class="msg.role === 'user' ? 'flex-row-reverse' : ''">
-          <div class="flex h-8 w-8 shrink-0 select-none items-center justify-center rounded-md border shadow" :class="msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'">
+        <div v-for="(msg, index) in messages" :key="index" class="flex gap-4" :class="msg.role === 'user' ? 'flex-row-reverse' : ''">
+          <div class="flex h-8 w-8 shrink-0 select-none items-center justify-center rounded-md border shadow-sm" :class="msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'">
             <User v-if="msg.role === 'user'" class="h-4 w-4" />
             <Bot v-else class="h-4 w-4" />
           </div>
-          <div class="rounded-lg px-3 py-2 text-sm max-w-[80%]" :class="msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'">
-            <p class="whitespace-pre-wrap">{{ msg.content }}</p>
+          <div class="rounded-lg px-4 py-3 text-sm max-w-[80%] shadow-sm" :class="msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted/50 border'">
+            <p class="whitespace-pre-wrap leading-relaxed">{{ msg.content }}</p>
           </div>
         </div>
-        <div v-if="loading" class="flex gap-3">
-          <div class="flex h-8 w-8 shrink-0 select-none items-center justify-center rounded-md border shadow bg-muted">
+        <div v-if="loading" class="flex gap-4">
+          <div class="flex h-8 w-8 shrink-0 select-none items-center justify-center rounded-md border shadow-sm bg-muted">
             <Bot class="h-4 w-4" />
           </div>
-          <div class="rounded-lg px-3 py-2 text-sm bg-muted flex items-center">
+          <div class="rounded-lg px-4 py-3 text-sm bg-muted/50 border flex items-center">
             <Loader2 class="h-4 w-4 animate-spin" />
           </div>
         </div>
       </div>
 
-      <div class="p-4 border-t bg-background">
-        <form @submit.prevent="sendMessage" class="flex gap-2">
+      <div class="p-4 border-t bg-background/50 backdrop-blur supports-[backdrop-filter]:bg-background/50">
+        <form @submit.prevent="sendMessage" class="flex gap-3 max-w-4xl mx-auto">
           <input 
             v-model="input" 
             placeholder="Type your message..." 
-            class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            class="flex h-11 w-full rounded-md border border-input bg-background px-4 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 shadow-sm"
             :disabled="loading"
           />
           <button 
             type="submit" 
-            class="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2"
+            class="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-11 px-6 shadow-sm"
             :disabled="loading || !input.trim()"
           >
             <Send class="h-4 w-4" />
