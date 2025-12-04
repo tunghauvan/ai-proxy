@@ -886,9 +886,10 @@ def chat():
 @click.option("--system", "-s", help="System message")
 @click.option("--kb-id", "-k", help="Knowledge base ID for RAG context")
 @click.option("--stream", is_flag=True, help="Stream the response")
+@click.option("--header", "-H", multiple=True, help="Custom header in format 'Name: Value' (can be repeated)")
 @pass_config
-def chat_send(config, message, model, system, kb_id, stream):
-    """Send a chat message"""
+def chat_send(config, message, model, system, kb_id, stream, header):
+    """Send a chat message with optional custom headers"""
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -903,6 +904,17 @@ def chat_send(config, message, model, system, kb_id, stream):
     headers = {"Content-Type": "application/json"}
     if kb_id:
         headers["X-KB-ID"] = kb_id
+    
+    # Parse custom headers
+    for h in header:
+        if ":" in h:
+            name, value = h.split(":", 1)
+            headers[name.strip()] = value.strip()
+        else:
+            click.echo(f"Warning: Invalid header format '{h}', expected 'Name: Value'", err=True)
+    
+    if config.verbose and header:
+        click.echo(f"Custom headers: {headers}")
     
     url = f"{config.base_url}/v1/chat/completions"
     
@@ -941,9 +953,10 @@ def chat_send(config, message, model, system, kb_id, stream):
 @click.option("--model", "-m", default=DEFAULT_MODEL, help="Model to use")
 @click.option("--system", "-s", help="System message")
 @click.option("--kb-id", "-k", help="Knowledge base ID for RAG context")
+@click.option("--header", "-H", multiple=True, help="Custom header in format 'Name: Value' (can be repeated)")
 @pass_config
-def chat_interactive(config, model, system, kb_id):
-    """Start an interactive chat session"""
+def chat_interactive(config, model, system, kb_id, header):
+    """Start an interactive chat session with optional custom headers"""
     click.echo(f"Starting interactive chat with {model}")
     click.echo("Type 'exit' or 'quit' to end the session")
     click.echo("-" * 50)
@@ -957,6 +970,15 @@ def chat_interactive(config, model, system, kb_id):
     if kb_id:
         headers["X-KB-ID"] = kb_id
         click.echo(f"Using KB: {kb_id}")
+    
+    # Parse custom headers
+    for h in header:
+        if ":" in h:
+            name, value = h.split(":", 1)
+            headers[name.strip()] = value.strip()
+            click.echo(f"Custom header: {name.strip()}: {value.strip()}")
+        else:
+            click.echo(f"Warning: Invalid header format '{h}', expected 'Name: Value'", err=True)
     
     while True:
         try:

@@ -194,14 +194,51 @@ class AgentState(TypedDict):
     context: Optional[str]  # Retrieved RAG context
     model_config_id: Optional[str]  # Custom model ID for per-request config
     kb_id: Optional[str]  # Knowledge base ID for per-request KB selection
+    request_headers: Optional[Dict[str, str]]  # Headers from the original client request
 
 
 # Define builtin tools
 @tool
 def get_datetime() -> str:
     """Get the current date and time. Use this tool when the user asks about the current time or date."""
-    now = datetime.now()
-    return now.strftime("%Y-%m-%d %H:%M:%S")
+    import httpx
+    
+    # Mock API URL
+    mock_api_url = "http://mock-api:8080"
+    
+    # Build headers to forward
+    headers_to_forward = {
+        "Content-Type": "application/json",
+    }
+    
+    # Get headers from request context
+    try:
+        request_headers = get_request_headers_context()
+    except NameError:
+        request_headers = {}
+    
+    # Forward specific headers from the original request
+    for header_name in ["x-user-id", "x-request-id", "authorization"]:
+        if header_name in request_headers:
+            headers_to_forward[header_name] = request_headers[header_name]
+    
+    try:
+        # Make the request to mock API
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(
+                f"{mock_api_url}/datetime",
+                headers=headers_to_forward
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            # Return just the datetime string
+            datetime_str = result.get("datetime", "N/A")
+            return datetime_str
+            
+    except Exception as e:
+        return f"Error calling datetime API: {str(e)}"
 
 
 @tool
@@ -222,6 +259,20 @@ BUILTIN_TOOLS = {
 # Cache for dynamically created custom tools
 _custom_tools_cache: Dict[str, StructuredTool] = {}
 
+# Thread-local storage for request headers context
+import threading
+_request_headers_context = threading.local()
+
+
+def _set_request_headers_context(headers: Dict[str, str]):
+    """Set the request headers in thread-local storage for tools to access."""
+    _request_headers_context.headers = headers
+
+
+def get_request_headers_context() -> Dict[str, str]:
+    """Get the current request headers from thread-local storage."""
+    return getattr(_request_headers_context, 'headers', {})
+
 
 def _create_safe_execution_context() -> Dict[str, Any]:
     """Create a safe execution context for custom tool code."""
@@ -229,6 +280,8 @@ def _create_safe_execution_context() -> Dict[str, Any]:
     import re as regex
     import json as json_module
     from datetime import datetime as dt, timedelta, date
+    import requests as requests_module
+    import os as os_module
     
     return {
         # Safe builtins
@@ -266,6 +319,10 @@ def _create_safe_execution_context() -> Dict[str, Any]:
         "datetime": dt,
         "timedelta": timedelta,
         "date": date,
+        "requests": requests_module,
+        "os": os_module,
+        # Request headers context function
+        "get_request_headers": get_request_headers_context,
     }
 
 
@@ -367,18 +424,28 @@ def _create_dynamic_tool(tool_config) -> Optional[StructuredTool]:
         def execute_custom_tool(**kwargs) -> str:
             """Execute the custom tool code."""
             try:
+                print(f"[TOOL] Executing custom tool: {t_name}")
+                print(f"[TOOL] Function code length: {len(fn_code)} chars")
+                print(f"[TOOL] kwargs: {kwargs}")
+                
                 # Create safe execution context
                 safe_globals = _create_safe_execution_context()
                 safe_locals = {}
                 
+                # Log available modules in safe context
+                print(f"[TOOL] Safe globals keys: {list(safe_globals.keys())}")
+                
                 # Execute the function code to define the function
                 exec(fn_code, safe_globals, safe_locals)
+                
+                print(f"[TOOL] Defined locals after exec: {list(safe_locals.keys())}")
                 
                 # Find the main function (should be named same as tool or 'main' or 'run')
                 func = None
                 for name in [t_name, "main", "run", "execute"]:
                     if name in safe_locals and callable(safe_locals[name]):
                         func = safe_locals[name]
+                        print(f"[TOOL] Found function by name: {name}")
                         break
                 
                 # If no named function found, look for any callable
@@ -386,19 +453,34 @@ def _create_dynamic_tool(tool_config) -> Optional[StructuredTool]:
                     for name, obj in safe_locals.items():
                         if callable(obj) and not name.startswith("_"):
                             func = obj
+                            print(f"[TOOL] Found function by scan: {name}")
                             break
                 
                 if func is None:
+                    print(f"[TOOL] ERROR: No executable function found in tool code")
                     return f"Error: No executable function found in tool code. Define a function named '{t_name}', 'main', 'run', or 'execute'."
                 
                 # Call the function with the provided kwargs
-                result = func(**kwargs)
+                import inspect
+                sig = inspect.signature(func)
+                # Only pass arguments that the function accepts
+                valid_kwargs = {}
+                for param_name, param in sig.parameters.items():
+                    if param_name in kwargs:
+                        valid_kwargs[param_name] = kwargs[param_name]
                 
-                return str(result) if result is not None else "Tool executed successfully."
+                print(f"[TOOL] Calling function with kwargs: {valid_kwargs}")
+                result = func(**valid_kwargs)
+                result_str = str(result) if result is not None else "Tool executed successfully."
+                print(f"[TOOL] Function result: {result_str[:200] if len(result_str) > 200 else result_str}")
+                
+                return result_str
                 
             except Exception as e:
                 import traceback
-                return f"Error executing tool: {str(e)}\n{traceback.format_exc()}"
+                error_msg = f"Error executing tool: {str(e)}\n{traceback.format_exc()}"
+                print(f"[TOOL] ERROR: {error_msg}")
+                return error_msg
         
         return execute_custom_tool
     
@@ -603,6 +685,10 @@ def tool_node(state: AgentState) -> dict:
     model_id = state.get("model_config_id")
     messages = state["messages"]
     last_message = messages[-1]
+    
+    # Set request headers in the context for tools that need them
+    request_headers = state.get("request_headers") or {}
+    _set_request_headers_context(request_headers)
     
     tool_messages = []
     

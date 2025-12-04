@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional, List, AsyncGenerator, Any, Dict
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -1325,6 +1325,7 @@ async def _stream_chat_response(
     model_config_id: Optional[str],
     langchain_messages: list,
     kb_id: Optional[str] = None,
+    request_headers: Optional[Dict[str, str]] = None,
 ) -> AsyncGenerator[str, None]:
     """Generate SSE stream for chat completions using LangGraph streaming."""
     chat_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
@@ -1376,7 +1377,7 @@ async def _stream_chat_response(
     # Stream from the graph
     try:
         async for event in graph.astream_events(
-            {"messages": langchain_messages, "model_config_id": model_config_id, "kb_id": kb_id},
+            {"messages": langchain_messages, "model_config_id": model_config_id, "kb_id": kb_id, "request_headers": request_headers or {}},
             version="v2",
         ):
             kind = event.get("event")
@@ -1501,7 +1502,13 @@ async def _stream_chat_response(
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest, kb_id: Optional[str] = None, x_kb_id: Optional[str] = Header(None, alias="X-KB-ID")):
+async def chat_completions(
+    request: ChatCompletionRequest, 
+    raw_request: Request,
+    kb_id: Optional[str] = None, 
+    x_kb_id: Optional[str] = Header(None, alias="X-KB-ID"),
+    x_user_id: Optional[str] = Header(None, alias="X-User-ID"),
+):
     """Chat completions endpoint - OpenAI compatible
     
     Supports model identifiers in formats:
@@ -1513,10 +1520,21 @@ async def chat_completions(request: ChatCompletionRequest, kb_id: Optional[str] 
     KB selection can be specified via:
     - kb_id query parameter
     - X-KB-ID header
+    
+    Custom headers (like X-User-ID) are propagated to tools.
     """
     # Use header value if query param not provided
     if kb_id is None and x_kb_id is not None:
         kb_id = x_kb_id
+    
+    # Collect headers to pass to tools
+    request_headers = {}
+    for header_name, header_value in raw_request.headers.items():
+        # Normalize header names to lowercase
+        header_name_lower = header_name.lower()
+        # Forward specific headers that tools might need
+        if header_name_lower.startswith("x-") or header_name_lower in ["authorization"]:
+            request_headers[header_name_lower] = header_value
         
     try:
         # Resolve model configuration
@@ -1528,7 +1546,7 @@ async def chat_completions(request: ChatCompletionRequest, kb_id: Optional[str] 
         # Handle streaming request
         if request.stream:
             return StreamingResponse(
-                _stream_chat_response(request, model_config_id, langchain_messages, kb_id),
+                _stream_chat_response(request, model_config_id, langchain_messages, kb_id, request_headers),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -1566,7 +1584,8 @@ async def chat_completions(request: ChatCompletionRequest, kb_id: Optional[str] 
         result = graph.invoke({
             "messages": langchain_messages,
             "model_config_id": model_config_id,
-            "kb_id": kb_id
+            "kb_id": kb_id,
+            "request_headers": request_headers
         })
         
         # Get the last AI message

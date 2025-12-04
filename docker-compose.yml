@@ -56,6 +56,7 @@ services:
       - ./logs:/app/logs
       - ./.env:/app/.env
       - ./scripts:/app/scripts:ro
+      - ./src:/app/src
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,6 +82,20 @@ services:
     depends_on:
       - langchain-proxy
     restart: unless-stopped
+
+  mock-api:
+    build:
+      context: ./mock_api
+      dockerfile: Dockerfile
+    container_name: mock-api
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 volumes:
   postgres_data:
