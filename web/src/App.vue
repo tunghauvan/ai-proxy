@@ -44,7 +44,7 @@ const toggleSidebar = () => {
       class="fixed inset-y-0 z-50 flex w-72 flex-col border-r bg-card transition-transform duration-300 lg:static lg:translate-x-0"
       :class="isSidebarOpen ? 'translate-x-0' : '-translate-x-full'"
     >
-      <div class="flex h-16 items-center border-b px-6">
+      <div class="flex h-14 items-center border-b px-6">
         <h1 class="text-lg font-bold tracking-tight">LangChain Proxy</h1>
       </div>
       <div class="flex-1 overflow-y-auto py-4">
