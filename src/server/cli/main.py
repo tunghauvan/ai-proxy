@@ -1182,7 +1182,7 @@ def logs_list(config, model, status, limit, offset, as_json):
         latency = f"{log.get('latency_ms', '-')}ms" if log.get("latency_ms") else "-"
         created = log.get("created_at", "")[:19] if log.get("created_at") else "-"
         rows.append([
-            log["id"][:8] + "...",
+            log["id"],  # Show full ID
             log["chat_id"],
             log["model_name"][:20],
             log["status"],
@@ -1191,18 +1191,24 @@ def logs_list(config, model, status, limit, offset, as_json):
             created,
         ])
     
-    print_table(headers, rows, max_width=35)
+    print_table(headers, rows, max_width=50)  # Increased max_width to accommodate full UUIDs
 
 
 @logs.command("show")
 @click.argument("log_id")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.option("--tools", "show_tools", is_flag=True, help="Show detailed tool execution logs")
 @pass_config
-def logs_show(config, log_id, as_json):
+def logs_show(config, log_id, as_json, show_tools):
     """Show details of a specific chat log"""
     result = api_request("GET", f"/v1/admin/logs/{log_id}", config.base_url)
     
+    # Also fetch tool execution logs for this chat
+    tool_logs = api_request_optional("GET", f"/v1/admin/tool-logs/chat/{log_id}", config.base_url)
+    
     if as_json:
+        if tool_logs:
+            result["tool_execution_logs"] = tool_logs.get("logs", [])
         print_json(result)
         return
     
@@ -1251,6 +1257,27 @@ def logs_show(config, log_id, as_json):
                 if len(output) > 200:
                     output = output[:200] + "..."
                 click.echo(f"    Output: {output}")
+    
+    # Show tool execution logs
+    if tool_logs and tool_logs.get("logs"):
+        click.echo(f"\n--- Tool Execution Logs ({tool_logs.get('count', 0)}) ---")
+        for tlog in tool_logs["logs"]:
+            status_icon = "✓" if tlog["status"] == "success" else "✗"
+            builtin = "[builtin]" if tlog.get("is_builtin") else "[custom]"
+            click.echo(f"  {status_icon} {tlog['tool_name']} {builtin} ({tlog.get('execution_time_ms', '-')}ms)")
+            
+            if show_tools:
+                if tlog.get("input_args"):
+                    click.echo(f"      Input: {json.dumps(tlog['input_args'])}")
+                if tlog.get("output_result"):
+                    output = tlog["output_result"]
+                    if len(output) > 150:
+                        output = output[:150] + "..."
+                    click.echo(f"      Output: {output}")
+                if tlog.get("headers_forwarded"):
+                    click.echo(f"      Headers: {json.dumps(tlog['headers_forwarded'])}")
+                if tlog.get("error_message"):
+                    click.echo(f"      Error: {tlog['error_message']}")
     
     if result.get("error_message"):
         click.echo("\n--- Error ---")
@@ -1322,6 +1349,174 @@ def logs_clear(config, before_days, yes):
     
     result = api_request("DELETE", "/v1/admin/logs", config.base_url, params=params)
     click.echo(f"Deleted {result['deleted_count']} logs")
+
+
+# ==================== Tool Execution Logs Commands ====================
+
+@cli.group("tool-logs")
+@pass_config
+def tool_logs(config):
+    """Manage tool execution logs for debugging and analytics"""
+    pass
+
+
+@tool_logs.command("list")
+@click.option("--tool", "-t", "tool_name", default=None, help="Filter by tool name")
+@click.option("--status", "-s", default=None, help="Filter by status (success, error)")
+@click.option("--limit", "-l", default=20, help="Number of logs to show")
+@click.option("--offset", "-o", default=0, help="Offset for pagination")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@pass_config
+def tool_logs_list(config, tool_name, status, limit, offset, as_json):
+    """List recent tool execution logs"""
+    params = {"limit": limit, "offset": offset}
+    if tool_name:
+        params["tool_name"] = tool_name
+    if status:
+        params["status"] = status
+    
+    result = api_request("GET", "/v1/admin/tool-logs", config.base_url, params=params)
+    
+    if as_json:
+        print_json(result)
+        return
+    
+    click.echo(f"Tool Execution Logs ({result['total']} total, showing {len(result['logs'])})\n")
+    
+    if not result["logs"]:
+        click.echo("No tool execution logs found.")
+        return
+    
+    headers = ["ID", "Tool", "Status", "Time (ms)", "Builtin", "Created At"]
+    rows = []
+    for log in result["logs"]:
+        rows.append([
+            log["id"],  # Show full ID
+            log["tool_name"],
+            log["status"],
+            str(log.get("execution_time_ms", "N/A")),
+            "Yes" if log.get("is_builtin") else "No",
+            log.get("created_at", "")[:19] if log.get("created_at") else "N/A",
+        ])
+    
+    print_table(headers, rows, max_width=50)  # Increased max_width to accommodate full UUIDs
+
+
+@tool_logs.command("show")
+@click.argument("log_id")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@pass_config
+def tool_logs_show(config, log_id, as_json):
+    """Show details of a specific tool execution log"""
+    result = api_request("GET", f"/v1/admin/tool-logs/{log_id}", config.base_url)
+    
+    if as_json:
+        print_json(result)
+        return
+    
+    click.echo(f"Tool Execution Log: {result['id']}\n")
+    click.echo(f"  Tool Name: {result['tool_name']}")
+    click.echo(f"  Status: {result['status']}")
+    click.echo(f"  Is Builtin: {'Yes' if result.get('is_builtin') else 'No'}")
+    click.echo(f"  Execution Time: {result.get('execution_time_ms', 'N/A')} ms")
+    click.echo(f"  Created At: {result.get('created_at', 'N/A')}")
+    
+    if result.get("chat_log_id"):
+        click.echo(f"  Chat Log ID: {result['chat_log_id']}")
+    
+    click.echo("\n  Input Arguments:")
+    if result.get("input_args"):
+        for key, value in result["input_args"].items():
+            click.echo(f"    {key}: {value}")
+    else:
+        click.echo("    (none)")
+    
+    click.echo("\n  Output Result:")
+    output = result.get("output_result", "(none)")
+    if len(output) > 500:
+        click.echo(f"    {output[:500]}...")
+        click.echo(f"    (truncated, {len(output)} chars total)")
+    else:
+        click.echo(f"    {output}")
+    
+    if result.get("headers_forwarded"):
+        click.echo("\n  Headers Forwarded:")
+        for key, value in result["headers_forwarded"].items():
+            click.echo(f"    {key}: {value}")
+    
+    if result.get("error_message"):
+        click.echo(f"\n  Error Message: {result['error_message']}")
+    
+    if result.get("error_traceback"):
+        click.echo("\n  Error Traceback:")
+        click.echo(f"    {result['error_traceback'][:500]}")
+
+
+@tool_logs.command("stats")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@pass_config
+def tool_logs_stats(config, as_json):
+    """Show statistics about tool executions"""
+    result = api_request("GET", "/v1/admin/tool-logs/stats", config.base_url)
+    
+    if as_json:
+        print_json(result)
+        return
+    
+    click.echo("Tool Execution Statistics\n")
+    click.echo(f"  Total Executions: {result['total_executions']}")
+    click.echo(f"  Successful: {result['total_successes']}")
+    click.echo(f"  Errors: {result['total_errors']}")
+    click.echo(f"  Success Rate: {result['success_rate']}%")
+    
+    if result.get("tools"):
+        click.echo("\n  Per-Tool Statistics:")
+        headers = ["Tool", "Executions", "Success", "Errors", "Avg Time (ms)"]
+        rows = []
+        for tool in result["tools"]:
+            rows.append([
+                tool["tool_name"],
+                str(tool["execution_count"]),
+                str(tool["success_count"]),
+                str(tool["error_count"]),
+                str(tool.get("avg_execution_time_ms", "N/A")),
+            ])
+        print_table(headers, rows)
+
+
+@tool_logs.command("delete")
+@click.argument("log_id")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@pass_config
+def tool_logs_delete(config, log_id, yes):
+    """Delete a specific tool execution log"""
+    if not yes:
+        click.confirm(f"Delete tool execution log {log_id}?", abort=True)
+    
+    result = api_request("DELETE", f"/v1/admin/tool-logs/{log_id}", config.base_url)
+    click.echo(f"Deleted tool execution log: {result['id']}")
+
+
+@tool_logs.command("clear")
+@click.option("--before-days", "-d", type=int, help="Only delete logs older than this many days")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@pass_config
+def tool_logs_clear(config, before_days, yes):
+    """Clear tool execution logs"""
+    if before_days:
+        msg = f"Delete all tool execution logs older than {before_days} days?"
+    else:
+        msg = "Delete ALL tool execution logs?"
+    
+    if not yes:
+        click.confirm(msg, abort=True)
+    
+    params = {}
+    if before_days:
+        params["before_days"] = before_days
+    
+    result = api_request("DELETE", "/v1/admin/tool-logs", config.base_url, params=params)
+    click.echo(f"Deleted {result['deleted_count']} tool execution logs")
 
 
 @cli.command("server")

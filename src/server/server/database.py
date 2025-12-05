@@ -204,6 +204,7 @@ class ChatLogDB(Base):
     request_messages = Column(JSON, nullable=False)  # Original request messages
     system_message = Column(Text, nullable=True)  # System message if any
     user_message = Column(Text, nullable=True)  # Last user message
+    request_headers = Column(JSON, nullable=True)  # Headers from the original request
     
     # Response details
     response_content = Column(Text, nullable=True)  # Final response content
@@ -234,6 +235,14 @@ class ChatLogDB(Base):
     # Timestamps
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     
+    # Relationships
+    tool_executions = relationship(
+        "ToolExecutionLogDB",
+        back_populates="chat_log",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    
     __table_args__ = (
         Index("ix_chat_logs_created_at_desc", created_at.desc()),
         Index("ix_chat_logs_model_created", model_name, created_at.desc()),
@@ -242,6 +251,48 @@ class ChatLogDB(Base):
     
     def __repr__(self):
         return f"<ChatLogDB(id={self.id}, chat_id={self.chat_id}, model={self.model_name})>"
+
+
+class ToolExecutionLogDB(Base):
+    """Database model for detailed tool execution logs."""
+    
+    __tablename__ = "tool_execution_logs"
+    
+    id = Column(String(36), primary_key=True)  # UUID
+    chat_log_id = Column(String(36), ForeignKey("chat_logs.id", ondelete="CASCADE"), nullable=True, index=True)
+    tool_name = Column(String(255), nullable=False, index=True)
+    
+    # Execution details
+    input_args = Column(JSON, nullable=True)  # Input arguments to the tool
+    output_result = Column(Text, nullable=True)  # Tool output
+    
+    # Headers propagated
+    headers_forwarded = Column(JSON, nullable=True)  # Headers that were forwarded to external APIs
+    
+    # Execution metrics
+    execution_time_ms = Column(Integer, nullable=True)  # Time taken to execute
+    status = Column(String(20), nullable=False, default="success")  # success, error
+    error_message = Column(Text, nullable=True)
+    error_traceback = Column(Text, nullable=True)
+    
+    # Additional context
+    is_builtin = Column(Boolean, nullable=False, default=False)
+    function_code_hash = Column(String(64), nullable=True)  # Hash of the function code for custom tools
+    
+    # Timestamps
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    
+    # Relationships
+    chat_log = relationship("ChatLogDB", back_populates="tool_executions")
+    
+    __table_args__ = (
+        Index("ix_tool_exec_created_at_desc", created_at.desc()),
+        Index("ix_tool_exec_tool_name", tool_name),
+        Index("ix_tool_exec_status", status),
+    )
+    
+    def __repr__(self):
+        return f"<ToolExecutionLogDB(id={self.id}, tool={self.tool_name}, status={self.status})>"
 
 
 # Database initialization functions
@@ -501,5 +552,199 @@ class ChatLogService:
             "error_message": log.error_message,
             "error_type": log.error_type,
             "is_stream": log.is_stream,
+            "created_at": log.created_at.isoformat() + "Z" if log.created_at else None,
+        }
+
+
+class ToolExecutionLogService:
+    """Service class for managing tool execution logs."""
+    
+    @staticmethod
+    def create_log(
+        tool_name: str,
+        input_args: Optional[Dict[str, Any]] = None,
+        output_result: Optional[str] = None,
+        headers_forwarded: Optional[Dict[str, str]] = None,
+        execution_time_ms: Optional[int] = None,
+        status: str = "success",
+        error_message: Optional[str] = None,
+        error_traceback: Optional[str] = None,
+        is_builtin: bool = False,
+        function_code_hash: Optional[str] = None,
+        chat_log_id: Optional[str] = None,
+    ) -> ToolExecutionLogDB:
+        """Create a new tool execution log entry."""
+        import uuid
+        
+        session = get_sync_session()
+        try:
+            log = ToolExecutionLogDB(
+                id=str(uuid.uuid4()),
+                chat_log_id=chat_log_id,
+                tool_name=tool_name,
+                input_args=input_args,
+                output_result=output_result,
+                headers_forwarded=headers_forwarded,
+                execution_time_ms=execution_time_ms,
+                status=status,
+                error_message=error_message,
+                error_traceback=error_traceback,
+                is_builtin=is_builtin,
+                function_code_hash=function_code_hash,
+            )
+            session.add(log)
+            session.commit()
+            session.refresh(log)
+            return log
+        finally:
+            session.close()
+    
+    @staticmethod
+    def get_logs(
+        limit: int = 50,
+        offset: int = 0,
+        tool_name: Optional[str] = None,
+        status: Optional[str] = None,
+        chat_log_id: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> Tuple[List[ToolExecutionLogDB], int]:
+        """Get tool execution logs with optional filters."""
+        session = get_sync_session()
+        try:
+            query = session.query(ToolExecutionLogDB)
+            
+            # Apply filters
+            if tool_name:
+                query = query.filter(ToolExecutionLogDB.tool_name == tool_name)
+            if status:
+                query = query.filter(ToolExecutionLogDB.status == status)
+            if chat_log_id:
+                query = query.filter(ToolExecutionLogDB.chat_log_id == chat_log_id)
+            if start_date:
+                query = query.filter(ToolExecutionLogDB.created_at >= start_date)
+            if end_date:
+                query = query.filter(ToolExecutionLogDB.created_at <= end_date)
+            
+            # Get total count before pagination
+            total = query.count()
+            
+            # Order by created_at desc
+            query = query.order_by(ToolExecutionLogDB.created_at.desc())
+            
+            # Apply pagination
+            logs = query.offset(offset).limit(limit).all()
+            
+            return logs, total
+        finally:
+            session.close()
+    
+    @staticmethod
+    def get_log_by_id(log_id: str) -> Optional[ToolExecutionLogDB]:
+        """Get a tool execution log by ID."""
+        session = get_sync_session()
+        try:
+            return session.query(ToolExecutionLogDB).filter(ToolExecutionLogDB.id == log_id).first()
+        finally:
+            session.close()
+    
+    @staticmethod
+    def get_logs_by_chat_id(chat_log_id: str) -> List[ToolExecutionLogDB]:
+        """Get all tool execution logs for a specific chat."""
+        session = get_sync_session()
+        try:
+            return session.query(ToolExecutionLogDB).filter(
+                ToolExecutionLogDB.chat_log_id == chat_log_id
+            ).order_by(ToolExecutionLogDB.created_at.asc()).all()
+        finally:
+            session.close()
+    
+    @staticmethod
+    def get_tool_stats(
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get statistics about tool executions."""
+        session = get_sync_session()
+        try:
+            from sqlalchemy import func, case
+            
+            query = session.query(
+                ToolExecutionLogDB.tool_name,
+                func.count(ToolExecutionLogDB.id).label("execution_count"),
+                func.sum(
+                    case((ToolExecutionLogDB.status == "success", 1), else_=0)
+                ).label("success_count"),
+                func.sum(
+                    case((ToolExecutionLogDB.status == "error", 1), else_=0)
+                ).label("error_count"),
+                func.avg(ToolExecutionLogDB.execution_time_ms).label("avg_execution_time_ms"),
+            )
+            
+            if start_date:
+                query = query.filter(ToolExecutionLogDB.created_at >= start_date)
+            if end_date:
+                query = query.filter(ToolExecutionLogDB.created_at <= end_date)
+            
+            query = query.group_by(ToolExecutionLogDB.tool_name)
+            results = query.all()
+            
+            return [
+                {
+                    "tool_name": r.tool_name,
+                    "execution_count": r.execution_count,
+                    "success_count": r.success_count or 0,
+                    "error_count": r.error_count or 0,
+                    "avg_execution_time_ms": round(r.avg_execution_time_ms, 2) if r.avg_execution_time_ms else None,
+                }
+                for r in results
+            ]
+        finally:
+            session.close()
+    
+    @staticmethod
+    def delete_log(log_id: str) -> bool:
+        """Delete a tool execution log by ID."""
+        session = get_sync_session()
+        try:
+            log = session.query(ToolExecutionLogDB).filter(ToolExecutionLogDB.id == log_id).first()
+            if not log:
+                return False
+            session.delete(log)
+            session.commit()
+            return True
+        finally:
+            session.close()
+    
+    @staticmethod
+    def clear_logs(before_date: Optional[datetime] = None) -> int:
+        """Clear tool execution logs, optionally before a specific date."""
+        session = get_sync_session()
+        try:
+            query = session.query(ToolExecutionLogDB)
+            if before_date:
+                query = query.filter(ToolExecutionLogDB.created_at < before_date)
+            count = query.delete()
+            session.commit()
+            return count
+        finally:
+            session.close()
+    
+    @staticmethod
+    def log_to_dict(log: ToolExecutionLogDB) -> Dict[str, Any]:
+        """Convert a ToolExecutionLogDB to a dictionary."""
+        return {
+            "id": log.id,
+            "chat_log_id": log.chat_log_id,
+            "tool_name": log.tool_name,
+            "input_args": log.input_args,
+            "output_result": log.output_result,
+            "headers_forwarded": log.headers_forwarded,
+            "execution_time_ms": log.execution_time_ms,
+            "status": log.status,
+            "error_message": log.error_message,
+            "error_traceback": log.error_traceback,
+            "is_builtin": log.is_builtin,
+            "function_code_hash": log.function_code_hash,
             "created_at": log.created_at.isoformat() + "Z" if log.created_at else None,
         }

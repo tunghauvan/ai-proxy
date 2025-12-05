@@ -1121,13 +1121,26 @@ async def get_chat_log_stats():
 
 
 @app.get("/v1/admin/logs/{log_id}")
-async def get_chat_log(log_id: str):
-    """Get a specific chat log by ID"""
+async def get_chat_log(log_id: str, include_tool_logs: bool = False):
+    """Get a specific chat log by ID
+    
+    Query parameters:
+    - include_tool_logs: Include detailed tool execution logs (default False)
+    """
     try:
         log = ChatLogService.get_log(log_id)
         if not log:
             raise HTTPException(status_code=404, detail=f"Chat log {log_id} not found")
-        return ChatLogService.log_to_dict(log)
+        
+        result = ChatLogService.log_to_dict(log)
+        
+        # Optionally include tool execution logs
+        if include_tool_logs:
+            from server.server.database import ToolExecutionLogService
+            tool_logs = ToolExecutionLogService.get_logs_by_chat_id(log_id)
+            result["tool_execution_logs"] = [ToolExecutionLogService.log_to_dict(tl) for tl in tool_logs]
+        
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -1135,13 +1148,26 @@ async def get_chat_log(log_id: str):
 
 
 @app.get("/v1/admin/logs/chat/{chat_id}")
-async def get_chat_log_by_chat_id(chat_id: str):
-    """Get a chat log by chat completion ID (chatcmpl-xxx)"""
+async def get_chat_log_by_chat_id(chat_id: str, include_tool_logs: bool = False):
+    """Get a chat log by chat completion ID (chatcmpl-xxx)
+    
+    Query parameters:
+    - include_tool_logs: Include detailed tool execution logs (default False)
+    """
     try:
         log = ChatLogService.get_log_by_chat_id(chat_id)
         if not log:
             raise HTTPException(status_code=404, detail=f"Chat log for {chat_id} not found")
-        return ChatLogService.log_to_dict(log)
+        
+        result = ChatLogService.log_to_dict(log)
+        
+        # Optionally include tool execution logs
+        if include_tool_logs:
+            from server.server.database import ToolExecutionLogService
+            tool_logs = ToolExecutionLogService.get_logs_by_chat_id(log.id)
+            result["tool_execution_logs"] = [ToolExecutionLogService.log_to_dict(tl) for tl in tool_logs]
+        
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -1179,6 +1205,116 @@ async def clear_chat_logs(before_days: Optional[int] = None):
         return {"status": "cleared", "deleted_count": count}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ Tool Execution Logs API ============
+
+@app.get("/v1/admin/tool-logs")
+async def list_tool_execution_logs(
+    limit: int = 50,
+    offset: int = 0,
+    tool_name: Optional[str] = None,
+    status: Optional[str] = None,
+    chat_log_id: Optional[str] = None,
+):
+    """List tool execution logs with optional filters
+    
+    Query parameters:
+    - limit: Maximum number of logs to return (default 50)
+    - offset: Number of logs to skip (default 0)
+    - tool_name: Filter by tool name
+    - status: Filter by status (success, error)
+    - chat_log_id: Filter by associated chat log ID
+    """
+    from server.server.database import ToolExecutionLogService
+    
+    logs, total = ToolExecutionLogService.get_logs(
+        limit=limit,
+        offset=offset,
+        tool_name=tool_name,
+        status=status,
+        chat_log_id=chat_log_id,
+    )
+    
+    return {
+        "logs": [ToolExecutionLogService.log_to_dict(log) for log in logs],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.get("/v1/admin/tool-logs/stats")
+async def get_tool_execution_stats():
+    """Get statistics about tool executions"""
+    from server.server.database import ToolExecutionLogService
+    
+    stats = ToolExecutionLogService.get_tool_stats()
+    
+    # Calculate totals
+    total_executions = sum(s["execution_count"] for s in stats)
+    total_successes = sum(s["success_count"] for s in stats)
+    total_errors = sum(s["error_count"] for s in stats)
+    
+    return {
+        "total_executions": total_executions,
+        "total_successes": total_successes,
+        "total_errors": total_errors,
+        "success_rate": round(total_successes / total_executions * 100, 2) if total_executions > 0 else 0,
+        "tools": stats,
+    }
+
+
+@app.get("/v1/admin/tool-logs/{log_id}")
+async def get_tool_execution_log(log_id: str):
+    """Get a specific tool execution log by ID"""
+    from server.server.database import ToolExecutionLogService
+    
+    log = ToolExecutionLogService.get_log_by_id(log_id)
+    if not log:
+        raise HTTPException(status_code=404, detail="Tool execution log not found")
+    
+    return ToolExecutionLogService.log_to_dict(log)
+
+
+@app.get("/v1/admin/tool-logs/chat/{chat_log_id}")
+async def get_tool_executions_for_chat(chat_log_id: str):
+    """Get all tool execution logs for a specific chat"""
+    from server.server.database import ToolExecutionLogService
+    
+    logs = ToolExecutionLogService.get_logs_by_chat_id(chat_log_id)
+    
+    return {
+        "chat_log_id": chat_log_id,
+        "logs": [ToolExecutionLogService.log_to_dict(log) for log in logs],
+        "count": len(logs),
+    }
+
+
+@app.delete("/v1/admin/tool-logs/{log_id}")
+async def delete_tool_execution_log(log_id: str):
+    """Delete a specific tool execution log"""
+    from server.server.database import ToolExecutionLogService
+    
+    success = ToolExecutionLogService.delete_log(log_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Tool execution log not found")
+    
+    return {"status": "deleted", "id": log_id}
+
+
+@app.delete("/v1/admin/tool-logs")
+async def clear_tool_execution_logs(before_days: Optional[int] = None):
+    """Clear tool execution logs, optionally only before a certain number of days ago"""
+    from server.server.database import ToolExecutionLogService
+    
+    before_date = None
+    if before_days:
+        from datetime import timedelta
+        before_date = datetime.utcnow() - timedelta(days=before_days)
+    
+    count = ToolExecutionLogService.clear_logs(before_date)
+    return {"status": "cleared", "deleted_count": count}
 
 
 @app.get("/v1/models")
@@ -1374,10 +1510,13 @@ async def _stream_chat_response(
     tools_used = []
     tool_calls_log = []
     
+    # Get chat_log_id for linking tool executions
+    chat_log_id = chat_log.id if chat_log else None
+    
     # Stream from the graph
     try:
         async for event in graph.astream_events(
-            {"messages": langchain_messages, "model_config_id": model_config_id, "kb_id": kb_id, "request_headers": request_headers or {}},
+            {"messages": langchain_messages, "model_config_id": model_config_id, "kb_id": kb_id, "request_headers": request_headers or {}, "chat_log_id": chat_log_id},
             version="v2",
         ):
             kind = event.get("event")
@@ -1581,11 +1720,15 @@ async def chat_completions(
         except Exception as e:
             logger.error(f"Failed to create chat log: {e}")
         
+        # Get chat_log_id for linking tool executions
+        chat_log_id = chat_log.id if chat_log else None
+        
         result = graph.invoke({
             "messages": langchain_messages,
             "model_config_id": model_config_id,
             "kb_id": kb_id,
-            "request_headers": request_headers
+            "request_headers": request_headers,
+            "chat_log_id": chat_log_id
         })
         
         # Get the last AI message

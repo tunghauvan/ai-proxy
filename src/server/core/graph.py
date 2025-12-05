@@ -195,6 +195,7 @@ class AgentState(TypedDict):
     model_config_id: Optional[str]  # Custom model ID for per-request config
     kb_id: Optional[str]  # Knowledge base ID for per-request KB selection
     request_headers: Optional[Dict[str, str]]  # Headers from the original client request
+    chat_log_id: Optional[str]  # Chat log ID for linking tool executions
 
 
 # Define builtin tools
@@ -259,19 +260,29 @@ BUILTIN_TOOLS = {
 # Cache for dynamically created custom tools
 _custom_tools_cache: Dict[str, StructuredTool] = {}
 
-# Thread-local storage for request headers context
+# Thread-local storage for request headers and chat log context
 import threading
-_request_headers_context = threading.local()
+_request_context = threading.local()
 
 
 def _set_request_headers_context(headers: Dict[str, str]):
     """Set the request headers in thread-local storage for tools to access."""
-    _request_headers_context.headers = headers
+    _request_context.headers = headers
 
 
 def get_request_headers_context() -> Dict[str, str]:
     """Get the current request headers from thread-local storage."""
-    return getattr(_request_headers_context, 'headers', {})
+    return getattr(_request_context, 'headers', {})
+
+
+def _set_chat_log_id_context(chat_log_id: Optional[str]):
+    """Set the chat log ID in thread-local storage for tool logging."""
+    _request_context.chat_log_id = chat_log_id
+
+
+def get_chat_log_id_context() -> Optional[str]:
+    """Get the current chat log ID from thread-local storage."""
+    return getattr(_request_context, 'chat_log_id', None)
 
 
 def _create_safe_execution_context() -> Dict[str, Any]:
@@ -423,6 +434,14 @@ def _create_dynamic_tool(tool_config) -> Optional[StructuredTool]:
     def make_executor(fn_code, t_name, p_names):
         def execute_custom_tool(**kwargs) -> str:
             """Execute the custom tool code."""
+            import time as time_module
+            start_time = time_module.time()
+            status = "success"
+            error_message = None
+            error_traceback = None
+            result_str = ""
+            headers_forwarded = None
+            
             try:
                 print(f"[TOOL] Executing custom tool: {t_name}")
                 print(f"[TOOL] Function code length: {len(fn_code)} chars")
@@ -434,6 +453,12 @@ def _create_dynamic_tool(tool_config) -> Optional[StructuredTool]:
                 
                 # Log available modules in safe context
                 print(f"[TOOL] Safe globals keys: {list(safe_globals.keys())}")
+                
+                # Get forwarded headers for logging
+                try:
+                    headers_forwarded = get_request_headers_context()
+                except:
+                    pass
                 
                 # Execute the function code to define the function
                 exec(fn_code, safe_globals, safe_locals)
@@ -458,29 +483,65 @@ def _create_dynamic_tool(tool_config) -> Optional[StructuredTool]:
                 
                 if func is None:
                     print(f"[TOOL] ERROR: No executable function found in tool code")
-                    return f"Error: No executable function found in tool code. Define a function named '{t_name}', 'main', 'run', or 'execute'."
-                
-                # Call the function with the provided kwargs
-                import inspect
-                sig = inspect.signature(func)
-                # Only pass arguments that the function accepts
-                valid_kwargs = {}
-                for param_name, param in sig.parameters.items():
-                    if param_name in kwargs:
-                        valid_kwargs[param_name] = kwargs[param_name]
-                
-                print(f"[TOOL] Calling function with kwargs: {valid_kwargs}")
-                result = func(**valid_kwargs)
-                result_str = str(result) if result is not None else "Tool executed successfully."
-                print(f"[TOOL] Function result: {result_str[:200] if len(result_str) > 200 else result_str}")
-                
-                return result_str
+                    status = "error"
+                    error_message = f"No executable function found in tool code. Define a function named '{t_name}', 'main', 'run', or 'execute'."
+                    result_str = f"Error: {error_message}"
+                else:
+                    # Call the function with the provided kwargs
+                    import inspect
+                    sig = inspect.signature(func)
+                    # Only pass arguments that the function accepts
+                    valid_kwargs = {}
+                    for param_name, param in sig.parameters.items():
+                        if param_name in kwargs:
+                            valid_kwargs[param_name] = kwargs[param_name]
+                    
+                    print(f"[TOOL] Calling function with kwargs: {valid_kwargs}")
+                    result = func(**valid_kwargs)
+                    result_str = str(result) if result is not None else "Tool executed successfully."
+                    print(f"[TOOL] Function result: {result_str[:200] if len(result_str) > 200 else result_str}")
                 
             except Exception as e:
-                import traceback
-                error_msg = f"Error executing tool: {str(e)}\n{traceback.format_exc()}"
-                print(f"[TOOL] ERROR: {error_msg}")
-                return error_msg
+                import traceback as tb_module
+                status = "error"
+                error_message = str(e)
+                error_traceback = tb_module.format_exc()
+                result_str = f"Error executing tool: {error_message}\n{error_traceback}"
+                print(f"[TOOL] ERROR: {result_str}")
+            
+            finally:
+                # Calculate execution time
+                execution_time_ms = int((time_module.time() - start_time) * 1000)
+                
+                # Log to database
+                try:
+                    from server.server.database import ToolExecutionLogService
+                    import hashlib as hl
+                    
+                    # Create a hash of the function code for tracking
+                    code_hash = hl.md5(fn_code.encode()).hexdigest()
+                    
+                    # Get chat_log_id from context
+                    chat_log_id = get_chat_log_id_context()
+                    
+                    ToolExecutionLogService.create_log(
+                        tool_name=t_name,
+                        input_args=kwargs,
+                        output_result=result_str[:10000] if len(result_str) > 10000 else result_str,  # Truncate if too long
+                        headers_forwarded=headers_forwarded,
+                        execution_time_ms=execution_time_ms,
+                        status=status,
+                        error_message=error_message,
+                        error_traceback=error_traceback[:5000] if error_traceback and len(error_traceback) > 5000 else error_traceback,
+                        is_builtin=False,
+                        function_code_hash=code_hash,
+                        chat_log_id=chat_log_id,
+                    )
+                    print(f"[TOOL] Logged execution to database: {t_name}, status={status}, time={execution_time_ms}ms, chat_log_id={chat_log_id}")
+                except Exception as log_err:
+                    print(f"[TOOL] Warning: Failed to log tool execution to database: {log_err}")
+            
+            return result_str
         
         return execute_custom_tool
     
@@ -690,11 +751,18 @@ def tool_node(state: AgentState) -> dict:
     request_headers = state.get("request_headers") or {}
     _set_request_headers_context(request_headers)
     
+    # Set chat_log_id in context for tool logging
+    chat_log_id = state.get("chat_log_id")
+    _set_chat_log_id_context(chat_log_id)
+    
     tool_messages = []
     
     # Create a mapping of tool names to tool functions
     active_tools = get_active_tools(model_id)
     tool_map = {t.name: t for t in active_tools}
+    
+    # Get builtin tool names for logging
+    builtin_tool_names = set(BUILTIN_TOOLS.keys())
     
     # Execute each tool call
     for tool_call in last_message.tool_calls:
@@ -702,7 +770,48 @@ def tool_node(state: AgentState) -> dict:
         tool_args = tool_call["args"]
         
         if tool_name in tool_map:
-            result = tool_map[tool_name].invoke(tool_args)
+            import time as time_module
+            start_time = time_module.time()
+            result = None
+            status = "success"
+            error_message = None
+            error_traceback = None
+            
+            is_builtin = tool_name in builtin_tool_names
+            
+            try:
+                result = tool_map[tool_name].invoke(tool_args)
+            except Exception as e:
+                import traceback as tb_module
+                status = "error"
+                error_message = str(e)
+                error_traceback = tb_module.format_exc()
+                result = f"Error executing tool: {error_message}"
+            
+            # Calculate execution time
+            execution_time_ms = int((time_module.time() - start_time) * 1000)
+            
+            # Log builtin tool execution to database (custom tools log themselves)
+            if is_builtin:
+                try:
+                    from server.server.database import ToolExecutionLogService
+                    
+                    ToolExecutionLogService.create_log(
+                        tool_name=tool_name,
+                        input_args=tool_args,
+                        output_result=str(result)[:10000] if result else None,
+                        headers_forwarded=request_headers if request_headers else None,
+                        execution_time_ms=execution_time_ms,
+                        status=status,
+                        error_message=error_message,
+                        error_traceback=error_traceback[:5000] if error_traceback and len(error_traceback) > 5000 else error_traceback,
+                        is_builtin=True,
+                        chat_log_id=chat_log_id,
+                    )
+                    print(f"[TOOL] Logged builtin execution to database: {tool_name}, status={status}, time={execution_time_ms}ms, chat_log_id={chat_log_id}")
+                except Exception as log_err:
+                    print(f"[TOOL] Warning: Failed to log builtin tool execution to database: {log_err}")
+            
             tool_messages.append(
                 ToolMessage(
                     content=str(result),
