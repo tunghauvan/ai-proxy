@@ -14,6 +14,7 @@ import {
   CheckCircle,
   XCircle
 } from 'lucide-vue-next'
+import { Breadcrumbs } from '../components'
 
 const route = useRoute()
 const router = useRouter()
@@ -178,6 +179,30 @@ const tabs = [
   { id: 'testing', label: 'Testing', icon: Play }
 ]
 
+// Computed breadcrumb items including current tab
+const breadcrumbItems = computed(() => {
+  const items = []
+  
+  // Add tool name
+  if (tool.value) {
+    items.push({
+      label: tool.value.name,
+      path: null
+    })
+  }
+  
+  // Add current tab
+  const currentTab = tabs.find(t => t.id === activeTab.value)
+  if (currentTab) {
+    items.push({
+      label: currentTab.label,
+      onClick: null
+    })
+  }
+  
+  return items
+})
+
 onMounted(() => {
   fetchTool()
 })
@@ -188,26 +213,17 @@ onMounted(() => {
     <!-- Header -->
     <div class="flex items-center justify-between">
       <div class="flex items-center space-x-4">
-        <button
-          @click="router.push('/tools')"
-          class="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2"
-        >
-          <ArrowLeft class="mr-2 h-4 w-4" />
-          Back to Tools
-        </button>
-        <div>
-          <h1 class="text-3xl font-bold tracking-tight">{{ tool?.name || 'Loading...' }}</h1>
-          <div class="flex items-center space-x-2 mt-1">
-            <span v-if="isBuiltin" class="inline-flex items-center rounded-full bg-primary/10 text-primary px-2.5 py-0.5 text-xs font-semibold">
-              Built-in
-            </span>
-            <span v-else class="inline-flex items-center rounded-full bg-secondary text-secondary-foreground px-2.5 py-0.5 text-xs font-semibold">
-              Custom
-            </span>
-            <span v-if="tool?.category" class="text-muted-foreground text-sm">
-              • {{ tool.category }}
-            </span>
-          </div>
+        <Breadcrumbs :items="breadcrumbItems" />
+        <div class="flex items-center space-x-2 ml-4">
+          <span v-if="isBuiltin" class="inline-flex items-center rounded-full bg-primary/10 text-primary px-2.5 py-0.5 text-xs font-semibold">
+            Built-in
+          </span>
+          <span v-else class="inline-flex items-center rounded-full bg-secondary text-secondary-foreground px-2.5 py-0.5 text-xs font-semibold">
+            Custom
+          </span>
+          <span v-if="tool?.category" class="text-muted-foreground text-sm">
+            • {{ tool.category }}
+          </span>
         </div>
       </div>
       <div class="flex items-center space-x-2">

@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useToast } from 'vue-toastification'
 import api from '../api/client'
 import { Plus, Trash2, RefreshCw, Settings, Database } from 'lucide-vue-next'
+import { Breadcrumbs } from '../components'
 
 const router = useRouter()
 const toast = useToast()
@@ -42,6 +43,9 @@ const openCreateModal = () => {
     embedding_model: ''
   }
   showCreateModal.value = true
+
+  // Add keyboard event listener for Escape key
+  document.addEventListener('keydown', handleKeyDown)
 }
 
 const openEditModal = (kb) => {
@@ -53,6 +57,9 @@ const openEditModal = (kb) => {
     embedding_model: kb.embedding_model || ''
   }
   showEditModal.value = true
+
+  // Add keyboard event listener for Escape key
+  document.addEventListener('keydown', handleKeyDown)
 }
 
 const createKB = async () => {
@@ -64,7 +71,7 @@ const createKB = async () => {
       embedding_model: form.value.embedding_model || null
     }
     await api.createKB(payload)
-    showCreateModal.value = false
+    closeCreateModal()
     toast.success('Knowledge Base created successfully')
     fetchKBs()
   } catch (error) {
@@ -82,13 +89,59 @@ const updateKB = async () => {
       embedding_model: form.value.embedding_model || null
     }
     await api.updateKB(editingKB.value.id, payload)
-    showEditModal.value = false
-    editingKB.value = null
+    closeEditModal()
     toast.success('Knowledge Base updated successfully')
     fetchKBs()
   } catch (error) {
     console.error('Error updating KB:', error)
     toast.error(error.response?.data?.detail || 'Failed to update Knowledge Base')
+  }
+}
+
+const closeCreateModal = () => {
+  showCreateModal.value = false
+  form.value = {
+    name: '',
+    description: '',
+    collection: '',
+    embedding_model: ''
+  }
+
+  // Remove keyboard event listener
+  document.removeEventListener('keydown', handleKeyDown)
+}
+
+const closeEditModal = () => {
+  showEditModal.value = false
+  editingKB.value = null
+  form.value = {
+    name: '',
+    description: '',
+    collection: '',
+    embedding_model: ''
+  }
+
+  // Remove keyboard event listener
+  document.removeEventListener('keydown', handleKeyDown)
+}
+
+const handleKeyDown = (event) => {
+  if (event.key === 'Escape') {
+    if (showCreateModal.value) {
+      closeCreateModal()
+    } else if (showEditModal.value) {
+      closeEditModal()
+    }
+  }
+}
+
+const handleBackdropClick = (event, modalType) => {
+  if (event.target === event.currentTarget) {
+    if (modalType === 'create') {
+      closeCreateModal()
+    } else if (modalType === 'edit') {
+      closeEditModal()
+    }
   }
 }
 
@@ -127,10 +180,7 @@ onMounted(() => {
 <template>
   <div class="space-y-6">
     <div class="flex items-center justify-between">
-      <div>
-        <h2 class="text-3xl font-bold tracking-tight">Knowledge Base</h2>
-        <p class="text-muted-foreground">Manage your RAG knowledge bases and documents</p>
-      </div>
+      <Breadcrumbs />
       <button 
         @click="openCreateModal"
         class="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2"
@@ -216,11 +266,11 @@ onMounted(() => {
     </div>
 
     <!-- Create Modal -->
-    <div v-if="showCreateModal" class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+    <div v-if="showCreateModal" class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" @click="handleBackdropClick($event, 'create')">
       <div class="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
         <div class="flex items-center justify-between mb-4">
           <h3 class="text-lg font-semibold">Create Knowledge Base</h3>
-          <button @click="showCreateModal = false" class="p-1 hover:bg-accent rounded-md">
+          <button @click="closeCreateModal" class="p-1 hover:bg-accent rounded-md">
             <span class="sr-only">Close</span>
             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
           </button>
@@ -287,11 +337,11 @@ onMounted(() => {
     </div>
 
     <!-- Edit Modal -->
-    <div v-if="showEditModal" class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+    <div v-if="showEditModal" class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" @click="handleBackdropClick($event, 'edit')">
       <div class="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
         <div class="flex items-center justify-between mb-4">
           <h3 class="text-lg font-semibold">Edit Knowledge Base</h3>
-          <button @click="showEditModal = false; editingKB = null" class="p-1 hover:bg-accent rounded-md">
+          <button @click="closeEditModal" class="p-1 hover:bg-accent rounded-md">
             <span class="sr-only">Close</span>
             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
           </button>

@@ -10,6 +10,7 @@ const KnowledgeBase = () => import('../views/KnowledgeBase.vue')
 const KnowledgeBaseDetail = () => import('../views/KnowledgeBaseDetail.vue')
 const Chat = () => import('../views/Chat.vue')
 const Logs = () => import('../views/Logs.vue')
+const ToolLogs = () => import('../views/ToolLogs.vue')
 
 const routes = [
   { path: '/', component: Dashboard, name: 'Dashboard' },
@@ -21,6 +22,7 @@ const routes = [
   { path: '/kb/:id', component: KnowledgeBaseDetail, name: 'KnowledgeBaseDetail' },
   { path: '/chat', component: Chat, name: 'Chat' },
   { path: '/logs', component: Logs, name: 'Logs' },
+  { path: '/tool-logs', component: ToolLogs, name: 'ToolLogs' },
 ]
 
 const router = createRouter({

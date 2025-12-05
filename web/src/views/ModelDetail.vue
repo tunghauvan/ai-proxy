@@ -1,10 +1,9 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'vue-toastification'
 import api from '../api/client'
 import {
-  ArrowLeft,
   Save,
   Play,
   Settings,
@@ -17,6 +16,7 @@ import {
   Eye,
   Edit3
 } from 'lucide-vue-next'
+import { Breadcrumbs } from '../components'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,6 +27,7 @@ const loading = ref(true)
 const saving = ref(false)
 const testing = ref(false)
 const activeTab = ref('overview')
+const checked = ref(false)
 
 const form = ref({
   // Basic settings
@@ -70,6 +71,16 @@ const showToolDialog = ref(false)
 const selectedTool = ref('')
 const toolCode = ref('')
 
+// Watch for changes in checked to update form.enabled
+watch(checked, (newValue) => {
+  form.value.enabled = newValue
+})
+
+// Watch for changes in form.enabled to update checked
+watch(() => form.value.enabled, (newValue) => {
+  checked.value = newValue
+})
+
 const fetchModel = async () => {
   loading.value = true
   try {
@@ -102,6 +113,9 @@ const fetchModel = async () => {
       tool_names: [...model.value.tool_names],
       tool_configs: model.value.tool_configs || {}
     }
+
+    // Sync checked with form.enabled
+    checked.value = form.value.enabled
 
     // Fetch additional data
     await Promise.all([
@@ -156,17 +170,92 @@ const fetchModelStats = async () => {
 
 const fetchVersionHistory = async () => {
   try {
-    // This would need a new API endpoint for version history
-    // For now, we'll use placeholder data
-    versionHistory.value = [
-      {
-        version: model.value.version,
-        created_at: model.value.created_at,
-        changes: 'Initial version'
-      }
-    ]
+    const response = await api.getModelVersions(route.params.id)
+    versionHistory.value = response.data || []
   } catch (error) {
     console.error('Error fetching version history:', error)
+    // Fallback to current version
+    if (model.value) {
+      versionHistory.value = [
+        {
+          version: model.value.version,
+          created_at: model.value.created_at,
+          enabled: model.value.enabled,
+          active: model.value.active,
+          rag_settings: model.value.rag_settings,
+          tool_names: model.value.tool_names
+        }
+      ]
+    }
+  }
+}
+
+// Version management functions
+const showCreateVersionModal = ref(false)
+const newVersion = ref({
+  version: '',
+  description: '',
+  enable_rag: false,
+  tool_names: []
+})
+const creatingVersion = ref(false)
+
+const openCreateVersionModal = () => {
+  newVersion.value = {
+    version: '',
+    description: '',
+    enable_rag: form.value.rag_settings?.enabled || false,
+    tool_names: [...(form.value.tool_names || [])]
+  }
+  showCreateVersionModal.value = true
+}
+
+const createVersion = async () => {
+  if (!newVersion.value.version) {
+    toast.error('Version number is required')
+    return
+  }
+  creatingVersion.value = true
+  try {
+    const payload = {
+      version: newVersion.value.version,
+      description: newVersion.value.description,
+      rag_settings: { enabled: newVersion.value.enable_rag },
+      tool_names: newVersion.value.tool_names
+    }
+    await api.createModelVersion(route.params.id, payload)
+    toast.success(`Version ${newVersion.value.version} created successfully!`)
+    showCreateVersionModal.value = false
+    await fetchVersionHistory()
+  } catch (error) {
+    console.error('Error creating version:', error)
+    toast.error('Failed to create version')
+  } finally {
+    creatingVersion.value = false
+  }
+}
+
+const activateVersion = async (version) => {
+  try {
+    await api.activateModelVersion(route.params.id, version)
+    toast.success(`Version ${version} activated!`)
+    await fetchVersionHistory()
+    await fetchModel()
+  } catch (error) {
+    console.error('Error activating version:', error)
+    toast.error('Failed to activate version')
+  }
+}
+
+const deactivateVersion = async (version) => {
+  try {
+    await api.deactivateModelVersion(route.params.id, version)
+    toast.success(`Version ${version} deactivated!`)
+    await fetchVersionHistory()
+    await fetchModel()
+  } catch (error) {
+    console.error('Error deactivating version:', error)
+    toast.error('Failed to deactivate version')
   }
 }
 
@@ -281,15 +370,45 @@ const handleKeyDown = (event) => {
   }
 }
 
+const handleBackdropClick = (event) => {
+  if (event.target === event.currentTarget) {
+    closeToolDialog()
+  }
+}
+
 const tabs = [
   { id: 'overview', label: 'Overview', icon: Eye },
   { id: 'parameters', label: 'Parameters', icon: Settings },
   { id: 'rag', label: 'RAG Settings', icon: Database },
   { id: 'tools', label: 'Tools', icon: Wrench },
+  { id: 'versions', label: 'Versions', icon: History },
   { id: 'testing', label: 'Testing', icon: TestTube },
-  { id: 'analytics', label: 'Analytics', icon: BarChart3 },
-  { id: 'history', label: 'Version History', icon: History }
+  { id: 'analytics', label: 'Analytics', icon: BarChart3 }
 ]
+
+// Computed breadcrumb items including current tab
+const breadcrumbItems = computed(() => {
+  const items = []
+  
+  // Add model name
+  if (model.value) {
+    items.push({
+      label: model.value.name,
+      path: null // Current page, not clickable to navigate away
+    })
+  }
+  
+  // Add current tab
+  const currentTab = tabs.find(t => t.id === activeTab.value)
+  if (currentTab) {
+    items.push({
+      label: currentTab.label,
+      onClick: null // Current tab
+    })
+  }
+  
+  return items
+})
 
 onMounted(() => {
   fetchModel()
@@ -306,25 +425,25 @@ onUnmounted(() => {
 <template>
   <div class="space-y-6">
     <!-- Header -->
-    <div class="flex items-center justify-between">
-      <div class="flex items-center space-x-4">
-        <button
-          @click="router.push('/models')"
-          class="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2"
-        >
-          <ArrowLeft class="mr-2 h-4 w-4" />
-          Back to Models
-        </button>
-        <div>
-          <h1 class="text-3xl font-bold tracking-tight">{{ model?.name || 'Loading...' }}</h1>
-          <p class="text-muted-foreground">Version {{ model?.version }}</p>
+    <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+      <div class="flex items-center gap-4">
+        <!-- Breadcrumbs -->
+        <Breadcrumbs :items="breadcrumbItems" />
+
+        <!-- Status Toggle -->
+        <div class="flex items-center gap-2 ml-6">
+          <span class="text-sm font-medium">Status:</span>
+          <span :class="form.enabled ? 'text-green-600' : 'text-red-600'" class="text-sm font-medium">
+            {{ form.enabled ? 'Active' : 'Inactive' }}
+          </span>
         </div>
       </div>
-      <div class="flex items-center space-x-2">
+
+      <div class="flex items-center gap-4">
         <button
           @click="saveModel"
           :disabled="saving"
-          class="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2"
+          class="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 h-10"
         >
           <Save class="mr-2 h-4 w-4" />
           {{ saving ? 'Saving...' : 'Save Changes' }}
@@ -370,8 +489,8 @@ onUnmounted(() => {
                 <Zap class="h-4 w-4 text-muted-foreground" />
               </div>
               <div class="text-2xl font-bold">
-                <span :class="model.active ? 'text-green-600' : 'text-red-600'">
-                  {{ model.active ? 'Active' : 'Inactive' }}
+                <span :class="form.enabled ? 'text-green-600' : 'text-red-600'">
+                  {{ form.enabled ? 'Active' : 'Inactive' }}
                 </span>
               </div>
             </div>
@@ -424,10 +543,6 @@ onUnmounted(() => {
                     {{ baseModel }}
                   </option>
                 </select>
-              </div>
-              <div class="flex items-center space-x-2">
-                <input type="checkbox" v-model="form.enabled" id="enabled" class="h-4 w-4" />
-                <label for="enabled" class="text-sm font-medium">Enabled</label>
               </div>
             </div>
           </div>
@@ -542,37 +657,39 @@ onUnmounted(() => {
             <h3 class="text-lg font-semibold mb-4">Available Tools</h3>
 
             <!-- Tools Table -->
-            <div class="overflow-x-auto">
-              <table class="w-full">
-                <thead>
-                  <tr class="border-b">
-                    <th class="text-left p-2 font-medium">Name</th>
-                    <th class="text-left p-2 font-medium">Description</th>
-                    <th class="text-left p-2 font-medium">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="tool in availableTools" :key="tool.name || tool"
-                      class="border-b hover:bg-muted/50">
-                    <td class="p-2">
-                      <div class="flex items-center space-x-2">
-                        <input type="checkbox" :checked="isToolSelected(tool.name || tool)"
-                               @change="toggleTool(tool.name || tool)" class="h-4 w-4" />
-                        <span class="font-medium">{{ tool.name || tool }}</span>
-                      </div>
-                    </td>
-                    <td class="p-2 text-sm text-muted-foreground">
-                      {{ tool.description || 'No description available' }}
-                    </td>
-                    <td class="p-2">
-                      <button @click="viewToolCode(tool.id)"
-                              class="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-8 px-3 py-1">
-                        <Eye class="mr-1 h-3 w-3" />
-                      </button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="rounded-md border bg-card">
+              <div class="relative w-full overflow-auto">
+                <table class="w-full caption-bottom text-sm">
+                  <thead class="[&_tr]:border-b">
+                    <tr class="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted">
+                      <th class="h-8 px-3 text-left align-middle font-medium text-muted-foreground">Name</th>
+                      <th class="h-8 px-3 text-left align-middle font-medium text-muted-foreground">Description</th>
+                      <th class="h-8 px-3 text-right align-middle font-medium text-muted-foreground">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody class="[&_tr:last-child]:border-0">
+                    <tr v-for="tool in availableTools" :key="tool.name || tool"
+                        class="border-b transition-colors hover:bg-muted/50">
+                      <td class="px-3 py-2 align-middle">
+                        <div class="flex items-center space-x-2">
+                          <input type="checkbox" :checked="isToolSelected(tool.name || tool)"
+                                 @change="toggleTool(tool.name || tool)" class="h-4 w-4" />
+                          <span class="font-medium">{{ tool.name || tool }}</span>
+                        </div>
+                      </td>
+                      <td class="px-3 py-2 align-middle text-muted-foreground max-w-[300px] truncate">
+                        {{ tool.description || 'No description available' }}
+                      </td>
+                      <td class="px-3 py-2 align-middle text-right">
+                        <button @click="viewToolCode(tool.id)"
+                                class="p-2 hover:bg-accent rounded-md" title="View Code">
+                          <Eye class="h-4 w-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
 
             <div v-if="form.tool_names.length > 0" class="mt-6">
@@ -657,21 +774,68 @@ onUnmounted(() => {
         </div>
 
         <!-- Version History Tab -->
-        <div v-if="activeTab === 'history'" class="space-y-6">
+        <div v-if="activeTab === 'versions'" class="space-y-6">
           <div class="rounded-xl border bg-card text-card-foreground shadow-sm">
-            <div class="flex flex-col space-y-1.5 p-6">
-              <h3 class="font-semibold leading-none tracking-tight">Version History</h3>
+            <div class="flex items-center justify-between p-6">
+              <h3 class="font-semibold leading-none tracking-tight">Model Versions</h3>
+              <button 
+                @click="openCreateVersionModal"
+                class="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-2"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+                New Version
+              </button>
             </div>
             <div class="p-6 pt-0">
-              <div class="space-y-4">
+              <div v-if="versionHistory.length === 0" class="text-center py-8 text-muted-foreground">
+                No versions found
+              </div>
+              <div v-else class="space-y-4">
                 <div v-for="version in versionHistory" :key="version.version"
-                     class="flex items-center justify-between p-4 border rounded-lg">
-                  <div>
-                    <h4 class="font-medium">Version {{ version.version }}</h4>
-                    <p class="text-sm text-muted-foreground">{{ version.changes }}</p>
+                     class="flex items-center justify-between p-4 border rounded-lg hover:bg-muted/50 transition-colors">
+                  <div class="flex-1">
+                    <div class="flex items-center gap-3">
+                      <h4 class="font-medium">v{{ version.version }}</h4>
+                      <span v-if="version.active" class="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-semibold text-green-800 dark:bg-green-900 dark:text-green-100">
+                        Active
+                      </span>
+                      <span v-else-if="version.enabled" class="inline-flex items-center rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-semibold text-blue-800 dark:bg-blue-900 dark:text-blue-100">
+                        Enabled
+                      </span>
+                      <span v-else class="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-semibold text-gray-800 dark:bg-gray-900 dark:text-gray-100">
+                        Disabled
+                      </span>
+                    </div>
+                    <div class="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
+                      <span v-if="version.rag_settings?.enabled">
+                        <Database class="inline h-3 w-3 mr-1" /> RAG Enabled
+                      </span>
+                      <span v-if="version.tool_names?.length">
+                        <Wrench class="inline h-3 w-3 mr-1" /> {{ version.tool_names.length }} Tools
+                      </span>
+                      <span v-if="version.created_at">
+                        Created: {{ new Date(version.created_at).toLocaleDateString() }}
+                      </span>
+                    </div>
+                    <p v-if="version.description" class="text-sm text-muted-foreground mt-1">{{ version.description }}</p>
                   </div>
-                  <div class="text-sm text-muted-foreground">
-                    {{ new Date(version.created_at).toLocaleDateString() }}
+                  <div class="flex items-center gap-2">
+                    <button 
+                      v-if="!version.active"
+                      @click="activateVersion(version.version)"
+                      class="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-8 px-3"
+                      title="Activate this version"
+                    >
+                      <Zap class="h-4 w-4 mr-1" /> Activate
+                    </button>
+                    <button 
+                      v-else
+                      @click="deactivateVersion(version.version)"
+                      class="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-8 px-3"
+                      title="Deactivate this version"
+                    >
+                      Deactivate
+                    </button>
                   </div>
                 </div>
               </div>
@@ -682,8 +846,74 @@ onUnmounted(() => {
     </div>
   </div>
 
+  <!-- Create Version Modal -->
+  <div v-if="showCreateVersionModal" class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+    <div class="bg-background rounded-lg shadow-lg max-w-lg w-full">
+      <div class="flex items-center justify-between p-6 border-b">
+        <h3 class="text-lg font-semibold">Create New Version</h3>
+        <button @click="showCreateVersionModal = false" class="text-muted-foreground hover:text-foreground">
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
+      <div class="p-6 space-y-4">
+        <div class="space-y-2">
+          <label class="text-sm font-medium">Version Number *</label>
+          <input 
+            v-model="newVersion.version" 
+            placeholder="e.g., 1.1.0" 
+            class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          />
+        </div>
+        <div class="space-y-2">
+          <label class="text-sm font-medium">Description</label>
+          <textarea 
+            v-model="newVersion.description" 
+            placeholder="Describe what's new in this version..."
+            rows="3"
+            class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          ></textarea>
+        </div>
+        <div class="flex items-center space-x-2">
+          <input 
+            type="checkbox" 
+            v-model="newVersion.enable_rag" 
+            id="version-rag" 
+            class="h-4 w-4 rounded border-primary text-primary ring-offset-background focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          />
+          <label for="version-rag" class="text-sm font-medium">Enable RAG</label>
+        </div>
+        <div class="space-y-2">
+          <label class="text-sm font-medium">Tools</label>
+          <select 
+            multiple 
+            v-model="newVersion.tool_names" 
+            class="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            <option v-for="tool in availableTools" :key="tool.id || tool.name" :value="tool.name">{{ tool.name }}</option>
+          </select>
+          <p class="text-xs text-muted-foreground">Hold Ctrl/Cmd to select multiple</p>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 p-6 border-t">
+        <button 
+          @click="showCreateVersionModal = false"
+          class="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4"
+        >
+          Cancel
+        </button>
+        <button 
+          @click="createVersion"
+          :disabled="creatingVersion || !newVersion.version"
+          class="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4"
+        >
+          {{ creatingVersion ? 'Creating...' : 'Create Version' }}
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Tool Code Dialog -->
-  <div v-if="showToolDialog" class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+  <div v-if="showToolDialog" class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" @click="handleBackdropClick">
     <div class="bg-background rounded-lg shadow-lg max-w-4xl w-full max-h-[80vh] overflow-hidden">
       <div class="flex items-center justify-between p-6 border-b">
         <h3 class="text-lg font-semibold">Tool Code: {{ selectedTool }}</h3>

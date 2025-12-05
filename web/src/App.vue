@@ -9,7 +9,8 @@ import {
   MessageSquare, 
   FileText,
   Menu,
-  X
+  X,
+  Activity
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -23,6 +24,7 @@ const navigation = [
   { name: 'Knowledge Base', href: '/kb', icon: Database },
   { name: 'Chat', href: '/chat', icon: MessageSquare },
   { name: 'Logs', href: '/logs', icon: FileText },
+  { name: 'Tool Logs', href: '/tool-logs', icon: Activity },
 ]
 
 const toggleSidebar = () => {

@@ -1,7 +1,8 @@
 <script setup>
 import { ref, onMounted, nextTick, watch } from 'vue'
-import api from '../api/client'
-import { Send, Bot, User, Loader2 } from 'lucide-vue-next'
+import api, { axiosInstance } from '../api/client'
+import { Send, Bot, User, Loader2, Settings2, Trash2, MessageSquare } from 'lucide-vue-next'
+import { Breadcrumbs } from '../components'
 
 const messages = ref([])
 const input = ref('')
@@ -11,6 +12,10 @@ const selectedModel = ref('')
 const kbs = ref([])
 const selectedKB = ref('')
 const messagesContainer = ref(null)
+const streamingEnabled = ref(true)
+const showSettings = ref(false)
+const systemMessage = ref('')
+const currentStreamingMessage = ref('')
 
 const fetchModels = async () => {
   try {
@@ -40,6 +45,11 @@ const scrollToBottom = async () => {
   }
 }
 
+const clearChat = () => {
+  messages.value = []
+  currentStreamingMessage.value = ''
+}
+
 const sendMessage = async () => {
   if (!input.value.trim() || loading.value) return
 
@@ -50,62 +60,88 @@ const sendMessage = async () => {
   scrollToBottom()
 
   try {
-    // Prepare messages for API
-    const apiMessages = messages.value.map(m => ({
+    // Build messages array for API
+    const apiMessages = []
+    if (systemMessage.value.trim()) {
+      apiMessages.push({ role: 'system', content: systemMessage.value })
+    }
+    apiMessages.push(...messages.value.map(m => ({
       role: m.role,
       content: m.content
-    }))
+    })))
 
     const payload = {
       model: selectedModel.value,
       messages: apiMessages,
-      stream: false // Simple implementation for now
+      stream: streamingEnabled.value
     }
 
-    // Add KB header if selected
-    const config = {}
+    // Build headers
+    const headers = {}
     if (selectedKB.value) {
-      config.headers = { 'X-KB-ID': selectedKB.value }
+      headers['X-KB-ID'] = selectedKB.value
     }
 
-    // We need to use axios directly to pass headers easily with the current client setup
-    // or modify the client. Let's use the client but we might need to adjust it if headers are needed per request
-    // The client.js chatCompletion doesn't accept config. 
-    // Let's just use the client as is, but we need to pass headers.
-    // I'll modify the client call to include headers in the payload if the backend supports it, 
-    // or I'll just assume the backend handles it via headers.
-    // Wait, the CLI sends X-KB-ID header. My client.js wrapper for chatCompletion takes `data`.
-    // I should probably update client.js to accept config, or just use axios here.
-    // For simplicity, I'll use the client and if it fails I'll fix it.
-    // Actually, looking at client.js: `chatCompletion: (data) => api.post('/chat/completions', data)`
-    // It doesn't allow custom headers. I should fix client.js or use a workaround.
-    // Workaround: I'll just import axios here for the chat request to be safe.
-    
-    // Actually, let's just use the client and ignore KB for a second, or better, update client.js.
-    // But I can't update client.js easily without another tool call.
-    // I'll just use the client and if I need headers I'll use the axios instance from client if I exported it?
-    // I exported `default { ... }`.
-    
-    // Let's just use `api.chatCompletion` and if I need KB support I'll add it later or now.
-    // The user wants "same for management". Chat is part of it.
-    // I'll try to pass the header in the data if the backend supports it? No, standard is header.
-    
-    // I will re-read client.js to see if I can pass config.
-    // `chatCompletion: (data) => api.post('/chat/completions', data)` -> No config.
-    
-    // I'll just implement without KB selection for now, or I'll fix client.js in a later step if needed.
-    // Actually, I can just use `api.post` if I import the instance? No I didn't export the instance.
-    
-    // Okay, I will just implement basic chat.
-    const response = await api.chatCompletion(payload)
-    
-    const assistantMessage = response.data.choices[0].message.content
-    messages.value.push({ role: 'assistant', content: assistantMessage })
+    if (streamingEnabled.value) {
+      // Handle streaming response
+      currentStreamingMessage.value = ''
+      messages.value.push({ role: 'assistant', content: '', streaming: true })
+      
+      const response = await fetch('/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...headers
+        },
+        body: JSON.stringify(payload)
+      })
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        const chunk = decoder.decode(value)
+        const lines = chunk.split('\n')
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6)
+            if (data === '[DONE]') {
+              // Finalize the streaming message
+              const lastMessage = messages.value[messages.value.length - 1]
+              lastMessage.streaming = false
+              break
+            }
+            try {
+              const parsed = JSON.parse(data)
+              const content = parsed.choices?.[0]?.delta?.content || ''
+              if (content) {
+                currentStreamingMessage.value += content
+                const lastMessage = messages.value[messages.value.length - 1]
+                lastMessage.content = currentStreamingMessage.value
+                scrollToBottom()
+              }
+            } catch (e) {
+              // Skip invalid JSON
+            }
+          }
+        }
+      }
+    } else {
+      // Handle non-streaming response
+      const response = await api.chatCompletion(payload, { headers })
+      const assistantMessage = response.data.choices[0].message.content
+      messages.value.push({ role: 'assistant', content: assistantMessage })
+    }
   } catch (error) {
     console.error('Error sending message:', error)
     messages.value.push({ role: 'assistant', content: 'Error: Failed to get response.' })
   } finally {
     loading.value = false
+    currentStreamingMessage.value = ''
     scrollToBottom()
   }
 }
@@ -119,19 +155,62 @@ onMounted(() => {
 <template>
   <div class="flex flex-col h-[calc(100vh-10rem)] max-w-5xl mx-auto w-full">
     <div class="flex items-center justify-between mb-6">
-      <h2 class="text-2xl font-bold tracking-tight">Chat</h2>
-      <div class="flex gap-3">
+      <Breadcrumbs />
+      <div class="flex gap-3 items-center">
+        <!-- Settings Toggle -->
+        <button 
+          @click="showSettings = !showSettings"
+          class="p-2 hover:bg-accent rounded-md"
+          :class="showSettings ? 'bg-accent' : ''"
+          title="Chat Settings"
+        >
+          <Settings2 class="h-5 w-5" />
+        </button>
+        
+        <!-- Clear Chat -->
+        <button 
+          @click="clearChat"
+          class="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-destructive"
+          title="Clear Chat"
+          :disabled="messages.length === 0"
+        >
+          <Trash2 class="h-5 w-5" />
+        </button>
+
+        <!-- KB Selection -->
         <div class="relative">
           <select v-model="selectedKB" class="h-9 w-[200px] rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
             <option value="">No Knowledge Base</option>
             <option v-for="kb in kbs" :key="kb.id" :value="kb.id">{{ kb.name }}</option>
           </select>
         </div>
+        
+        <!-- Model Selection -->
         <div class="relative">
           <select v-model="selectedModel" class="h-9 w-[200px] rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
             <option v-for="model in models" :key="model.id" :value="model.name">{{ model.name }}</option>
           </select>
         </div>
+      </div>
+    </div>
+
+    <!-- Settings Panel -->
+    <div v-if="showSettings" class="mb-4 p-4 rounded-lg border bg-card space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="font-medium">Chat Settings</h3>
+        <div class="flex items-center space-x-2">
+          <input type="checkbox" v-model="streamingEnabled" id="streaming" class="h-4 w-4 rounded border-primary text-primary" />
+          <label for="streaming" class="text-sm font-medium">Enable Streaming</label>
+        </div>
+      </div>
+      <div class="space-y-2">
+        <label class="text-sm font-medium">System Message</label>
+        <textarea 
+          v-model="systemMessage" 
+          placeholder="Enter a system message to set the AI's behavior..."
+          rows="2"
+          class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        ></textarea>
       </div>
     </div>
 
@@ -142,6 +221,7 @@ onMounted(() => {
             <MessageSquare class="h-8 w-8" />
           </div>
           <p>Start a conversation with the AI assistant</p>
+          <p v-if="selectedKB" class="text-xs">Using Knowledge Base: {{ kbs.find(k => k.id === selectedKB)?.name }}</p>
         </div>
         <div v-for="(msg, index) in messages" :key="index" class="flex gap-4" :class="msg.role === 'user' ? 'flex-row-reverse' : ''">
           <div class="flex h-8 w-8 shrink-0 select-none items-center justify-center rounded-md border shadow-sm" :class="msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'">
@@ -150,9 +230,10 @@ onMounted(() => {
           </div>
           <div class="rounded-lg px-4 py-3 text-sm max-w-[80%] shadow-sm" :class="msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted/50 border'">
             <p class="whitespace-pre-wrap leading-relaxed">{{ msg.content }}</p>
+            <span v-if="msg.streaming" class="inline-block w-2 h-4 bg-current animate-pulse ml-1"></span>
           </div>
         </div>
-        <div v-if="loading" class="flex gap-4">
+        <div v-if="loading && !streamingEnabled" class="flex gap-4">
           <div class="flex h-8 w-8 shrink-0 select-none items-center justify-center rounded-md border shadow-sm bg-muted">
             <Bot class="h-4 w-4" />
           </div>

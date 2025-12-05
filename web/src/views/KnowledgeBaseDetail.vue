@@ -16,6 +16,7 @@ import {
   BarChart3,
   X
 } from 'lucide-vue-next'
+import { Breadcrumbs } from '../components'
 
 const route = useRoute()
 const router = useRouter()
@@ -45,12 +46,51 @@ const importSource = ref('')
 const importDocuments = ref([{ content: '', source: '' }])
 const importing = ref(false)
 
+// Folder Sync state
+const showSyncModal = ref(false)
+const syncForm = ref({
+  folderPath: '',
+  extensions: 'txt,md,pdf',
+  recursive: true,
+  clearBefore: false
+})
+const syncing = ref(false)
+const syncResults = ref(null)
+
+// Document Detail state
+const showDocumentModal = ref(false)
+const selectedDocument = ref(null)
+
 const tabs = [
   { id: 'documents', label: 'Documents', icon: FileText },
   { id: 'search', label: 'Search Test', icon: Search },
   { id: 'import', label: 'Import', icon: Upload },
   { id: 'stats', label: 'Statistics', icon: BarChart3 }
 ]
+
+// Computed breadcrumb items including current tab
+const breadcrumbItems = computed(() => {
+  const items = []
+  
+  // Add KB name
+  if (kb.value) {
+    items.push({
+      label: kb.value.name,
+      path: null
+    })
+  }
+  
+  // Add current tab
+  const currentTab = tabs.find(t => t.id === activeTab.value)
+  if (currentTab) {
+    items.push({
+      label: currentTab.label,
+      onClick: null
+    })
+  }
+  
+  return items
+})
 
 const fetchKB = async () => {
   loading.value = true
@@ -126,6 +166,9 @@ const openImportModal = (type) => {
   importSource.value = ''
   importDocuments.value = [{ content: '', source: '' }]
   showImportModal.value = true
+
+  // Add keyboard event listener for Escape key
+  document.addEventListener('keydown', handleKeyDown)
 }
 
 const addImportDocument = () => {
@@ -193,9 +236,114 @@ const reloadKB = async () => {
   }
 }
 
+// Folder Sync functions
+const openSyncModal = () => {
+  syncForm.value = {
+    folderPath: '',
+    extensions: 'txt,md,pdf',
+    recursive: true,
+    clearBefore: false
+  }
+  syncResults.value = null
+  showSyncModal.value = true
+
+  // Add keyboard event listener for Escape key
+  document.addEventListener('keydown', handleKeyDown)
+}
+
+const performFolderSync = async () => {
+  if (!syncForm.value.folderPath.trim()) {
+    toast.warning('Please enter a folder path')
+    return
+  }
+  
+  syncing.value = true
+  syncResults.value = null
+  try {
+    const response = await api.syncKBFolder(route.params.id, {
+      folder_path: syncForm.value.folderPath,
+      extensions: syncForm.value.extensions.split(',').map(e => e.trim()),
+      recursive: syncForm.value.recursive,
+      clear_before: syncForm.value.clearBefore
+    })
+    syncResults.value = response.data
+    toast.success(`Synced ${response.data.documents_synced || 0} documents`)
+    await Promise.all([fetchStats(), fetchDocuments()])
+  } catch (error) {
+    console.error('Error syncing folder:', error)
+    toast.error(error.response?.data?.detail || 'Folder sync failed')
+  } finally {
+    syncing.value = false
+  }
+}
+
 const hasMoreDocs = computed(() => {
   return docsPagination.value.offset + documents.value.length < docsPagination.value.total
 })
+
+const closeImportModal = () => {
+  showImportModal.value = false
+  importText.value = ''
+  importSource.value = ''
+  importDocuments.value = [{ content: '', source: '' }]
+
+  // Remove keyboard event listener
+  document.removeEventListener('keydown', handleKeyDown)
+}
+
+const closeSyncModal = () => {
+  showSyncModal.value = false
+  syncForm.value = {
+    folderPath: '',
+    extensions: 'txt,md,pdf',
+    recursive: true,
+    clearBefore: false
+  }
+  syncResults.value = null
+
+  // Remove keyboard event listener
+  document.removeEventListener('keydown', handleKeyDown)
+}
+
+const openDocumentModal = (doc) => {
+  selectedDocument.value = doc
+  showDocumentModal.value = true
+
+  // Add keyboard event listener for Escape key
+  document.addEventListener('keydown', handleKeyDown)
+}
+
+const closeDocumentModal = () => {
+  showDocumentModal.value = false
+  selectedDocument.value = null
+
+  // Remove keyboard event listener
+  document.removeEventListener('keydown', handleKeyDown)
+}
+
+const handleKeyDown = (event) => {
+  if (event.key === 'Escape') {
+    if (showImportModal.value) {
+      closeImportModal()
+    } else if (showSyncModal.value) {
+      closeSyncModal()
+    } else if (showDocumentModal.value) {
+      closeDocumentModal()
+    }
+  }
+}
+
+const handleBackdropClick = (event, modalType) => {
+  if (event.target === event.currentTarget) {
+    if (modalType === 'import') {
+      closeImportModal()
+    } else if (modalType === 'sync') {
+      closeSyncModal()
+    } else if (modalType === 'document') {
+      closeDocumentModal()
+    }
+  }
+}
 
 onMounted(() => {
   fetchKB()
@@ -207,26 +355,19 @@ onMounted(() => {
     <!-- Header -->
     <div class="flex items-center justify-between">
       <div class="flex items-center space-x-4">
-        <button
-          @click="router.push('/kb')"
-          class="inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2"
-        >
-          <ArrowLeft class="mr-2 h-4 w-4" />
-          Back
-        </button>
-        <div v-if="kb">
-          <div class="flex items-center space-x-3">
-            <div class="p-2 bg-primary/10 rounded-lg">
-              <Database class="h-6 w-6 text-primary" />
-            </div>
-            <div>
-              <h1 class="text-2xl font-bold tracking-tight">{{ kb.name }}</h1>
-              <p class="text-sm text-muted-foreground font-mono">{{ kb.collection }}</p>
-            </div>
-          </div>
+        <Breadcrumbs :items="breadcrumbItems" />
+        <div v-if="kb" class="flex items-center space-x-2 ml-4">
+          <span class="text-sm text-muted-foreground font-mono">{{ kb.collection }}</span>
         </div>
       </div>
       <div class="flex items-center space-x-2">
+        <button
+          @click="openSyncModal"
+          class="inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2"
+        >
+          <Upload class="mr-2 h-4 w-4" />
+          Sync Folder
+        </button>
         <button
           @click="reloadKB"
           class="inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2"
@@ -339,7 +480,8 @@ onMounted(() => {
             <div 
               v-for="doc in documents" 
               :key="doc.id" 
-              class="p-4 border rounded-lg bg-card hover:bg-muted/50"
+              class="p-4 border rounded-lg bg-card hover:bg-muted/50 cursor-pointer"
+              @click="openDocumentModal(doc)"
             >
               <div class="flex justify-between items-start mb-2">
                 <div class="flex items-center space-x-2">
@@ -516,13 +658,13 @@ onMounted(() => {
     </div>
 
     <!-- Import Modal -->
-    <div v-if="showImportModal" class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+    <div v-if="showImportModal" class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" @click="handleBackdropClick($event, 'import')">
       <div class="w-full max-w-2xl rounded-lg border bg-card p-6 shadow-lg max-h-[90vh] overflow-y-auto">
         <div class="flex items-center justify-between mb-4">
           <h3 class="text-lg font-semibold">
             {{ importType === 'text' ? 'Import Text' : 'Import Documents' }}
           </h3>
-          <button @click="showImportModal = false" class="p-1 hover:bg-accent rounded-md">
+          <button @click="closeImportModal" class="p-1 hover:bg-accent rounded-md">
             <X class="h-4 w-4" />
           </button>
         </div>
@@ -601,6 +743,135 @@ onMounted(() => {
           >
             <Upload class="mr-2 h-4 w-4" />
             {{ importing ? 'Importing...' : 'Import' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Folder Sync Modal -->
+    <div v-if="showSyncModal" class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" @click="handleBackdropClick($event, 'sync')">
+      <div class="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-lg font-semibold">Sync Folder</h3>
+          <button @click="closeSyncModal" class="p-1 hover:bg-accent rounded-md">
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+
+        <div class="space-y-4">
+          <div class="space-y-2">
+            <label class="text-sm font-medium">Folder Path *</label>
+            <input
+              v-model="syncForm.folderPath"
+              placeholder="/path/to/documents/folder"
+              class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+            <p class="text-xs text-muted-foreground">Server-side path to the folder containing documents</p>
+          </div>
+
+          <div class="space-y-2">
+            <label class="text-sm font-medium">File Extensions</label>
+            <input
+              v-model="syncForm.extensions"
+              placeholder="txt,md,pdf"
+              class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+            <p class="text-xs text-muted-foreground">Comma-separated list of file extensions to include</p>
+          </div>
+
+          <div class="flex items-center gap-6">
+            <div class="flex items-center space-x-2">
+              <input type="checkbox" v-model="syncForm.recursive" id="recursive" class="h-4 w-4 rounded border-primary text-primary ring-offset-background focus:ring-2 focus:ring-ring focus:ring-offset-2" />
+              <label for="recursive" class="text-sm font-medium">Recursive (include subfolders)</label>
+            </div>
+          </div>
+
+          <div class="flex items-center space-x-2">
+            <input type="checkbox" v-model="syncForm.clearBefore" id="clearBefore" class="h-4 w-4 rounded border-destructive text-destructive ring-offset-background focus:ring-2 focus:ring-ring focus:ring-offset-2" />
+            <label for="clearBefore" class="text-sm font-medium text-destructive">Clear KB before sync</label>
+          </div>
+
+          <!-- Sync Results -->
+          <div v-if="syncResults" class="rounded-md border p-4 space-y-2 bg-muted/50">
+            <h4 class="font-medium">Sync Results</h4>
+            <div class="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <span class="text-muted-foreground">Files Found:</span>
+                <span class="ml-2 font-medium">{{ syncResults.files_found || 0 }}</span>
+              </div>
+              <div>
+                <span class="text-muted-foreground">Documents Synced:</span>
+                <span class="ml-2 font-medium">{{ syncResults.documents_synced || 0 }}</span>
+              </div>
+              <div>
+                <span class="text-muted-foreground">Chunks Created:</span>
+                <span class="ml-2 font-medium">{{ syncResults.chunks_created || 0 }}</span>
+              </div>
+              <div v-if="syncResults.errors">
+                <span class="text-destructive">Errors:</span>
+                <span class="ml-2 font-medium text-destructive">{{ syncResults.errors }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex justify-end space-x-2 pt-4 border-t">
+            <button
+              @click="showSyncModal = false"
+              class="inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4"
+            >
+              Close
+            </button>
+            <button
+              @click="performFolderSync"
+              :disabled="syncing || !syncForm.folderPath.trim()"
+              class="inline-flex items-center justify-center rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 disabled:opacity-50"
+            >
+              <RefreshCw v-if="syncing" class="mr-2 h-4 w-4 animate-spin" />
+              <Upload v-else class="mr-2 h-4 w-4" />
+              {{ syncing ? 'Syncing...' : 'Start Sync' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Document Detail Modal -->
+    <div v-if="showDocumentModal" class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" @click="handleBackdropClick($event, 'document')">
+      <div class="w-full max-w-4xl max-h-[80vh] rounded-lg border bg-card p-6 shadow-lg overflow-hidden flex flex-col">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-lg font-semibold">Document Details</h3>
+          <button @click="closeDocumentModal" class="p-1 hover:bg-accent rounded-md">
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+
+        <div v-if="selectedDocument" class="flex-1 overflow-auto">
+          <div class="space-y-4">
+            <div class="grid gap-4 md:grid-cols-2">
+              <div class="space-y-2">
+                <label class="text-sm font-medium text-muted-foreground">Source</label>
+                <p class="text-lg font-medium">{{ selectedDocument.source || 'Unknown source' }}</p>
+              </div>
+              <div class="space-y-2">
+                <label class="text-sm font-medium text-muted-foreground">ID</label>
+                <p class="text-lg font-medium font-mono">{{ selectedDocument.id }}</p>
+              </div>
+            </div>
+            <div class="space-y-2">
+              <label class="text-sm font-medium text-muted-foreground">Content</label>
+              <div class="rounded-md border bg-muted/50 p-4 max-h-96 overflow-auto">
+                <pre class="text-sm whitespace-pre-wrap">{{ selectedDocument.content }}</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex justify-end pt-4 border-t mt-4">
+          <button
+            @click="closeDocumentModal"
+            class="inline-flex items-center justify-center rounded-md text-sm font-medium border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4"
+          >
+            Close
           </button>
         </div>
       </div>

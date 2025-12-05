@@ -3,7 +3,8 @@ import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from 'vue-toastification'
 import api from '../api/client'
-import { Plus, Trash2, Code, Settings, Search, Filter, Wrench } from 'lucide-vue-next'
+import { Plus, Trash2, Code, Settings, Search, Filter, Wrench, Eye } from 'lucide-vue-next'
+import { Breadcrumbs } from '../components'
 
 const router = useRouter()
 const toast = useToast()
@@ -66,6 +67,9 @@ const openCreateModal = () => {
     function_code: 'def main(args):\n    """\n    Tool entry point.\n    \n    Args:\n        args: Dictionary of input arguments\n        \n    Returns:\n        Result string or dictionary\n    """\n    return "Hello World"'
   }
   showCreateModal.value = true
+
+  // Add keyboard event listener for Escape key
+  document.addEventListener('keydown', handleKeyDown)
 }
 
 const createTool = async () => {
@@ -77,12 +81,37 @@ const createTool = async () => {
       function_code: form.value.function_code,
       enabled: true
     })
-    showCreateModal.value = false
+    closeCreateModal()
     toast.success('Tool created successfully!')
     fetchTools()
   } catch (error) {
     console.error('Error creating tool:', error)
     toast.error(error.response?.data?.detail || 'Failed to create tool')
+  }
+}
+
+const closeCreateModal = () => {
+  showCreateModal.value = false
+  form.value = {
+    name: '',
+    description: '',
+    category: '',
+    function_code: ''
+  }
+
+  // Remove keyboard event listener
+  document.removeEventListener('keydown', handleKeyDown)
+}
+
+const handleKeyDown = (event) => {
+  if (event.key === 'Escape' && showCreateModal.value) {
+    closeCreateModal()
+  }
+}
+
+const handleBackdropClick = (event) => {
+  if (event.target === event.currentTarget) {
+    closeCreateModal()
   }
 }
 
@@ -111,10 +140,7 @@ onMounted(() => {
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex items-center justify-between">
-      <div>
-        <h2 class="text-3xl font-bold tracking-tight">Tools</h2>
-        <p class="text-muted-foreground mt-1">Manage built-in and custom tools for your AI models</p>
-      </div>
+      <Breadcrumbs />
       <button 
         @click="openCreateModal"
         class="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2"
@@ -190,12 +216,12 @@ onMounted(() => {
         <table class="w-full caption-bottom text-sm">
           <thead class="[&_tr]:border-b">
             <tr class="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted">
-              <th class="h-12 px-4 text-left align-middle font-medium text-muted-foreground">Name</th>
-              <th class="h-12 px-4 text-left align-middle font-medium text-muted-foreground">Category</th>
-              <th class="h-12 px-4 text-left align-middle font-medium text-muted-foreground">Type</th>
-              <th class="h-12 px-4 text-left align-middle font-medium text-muted-foreground">Description</th>
-              <th class="h-12 px-4 text-left align-middle font-medium text-muted-foreground">Status</th>
-              <th class="h-12 px-4 text-right align-middle font-medium text-muted-foreground">Actions</th>
+              <th class="h-8 px-3 text-left align-middle font-medium text-muted-foreground">Name</th>
+              <th class="h-8 px-3 text-left align-middle font-medium text-muted-foreground">Category</th>
+              <th class="h-8 px-3 text-left align-middle font-medium text-muted-foreground">Type</th>
+              <th class="h-8 px-3 text-left align-middle font-medium text-muted-foreground">Description</th>
+              <th class="h-8 px-3 text-left align-middle font-medium text-muted-foreground">Status</th>
+              <th class="h-8 px-3 text-right align-middle font-medium text-muted-foreground">Actions</th>
             </tr>
           </thead>
           <tbody class="[&_tr:last-child]:border-0">
@@ -205,21 +231,14 @@ onMounted(() => {
               class="border-b transition-colors hover:bg-muted/50 cursor-pointer"
               @click="viewToolDetails(tool)"
             >
-              <td class="p-4 align-middle">
-                <div class="flex items-center space-x-3">
-                  <div class="p-2 rounded-lg bg-primary/10">
-                    <Code class="h-4 w-4 text-primary" />
-                  </div>
-                  <span class="font-medium">{{ tool.name }}</span>
-                </div>
-              </td>
-              <td class="p-4 align-middle">
+              <td class="px-3 py-2 align-middle font-medium">{{ tool.name }}</td>
+              <td class="px-3 py-2 align-middle">
                 <span v-if="tool.category" class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors border-transparent bg-secondary text-secondary-foreground">
                   {{ tool.category }}
                 </span>
                 <span v-else class="text-muted-foreground">-</span>
               </td>
-              <td class="p-4 align-middle">
+              <td class="px-3 py-2 align-middle">
                 <span v-if="tool.is_builtin" class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors border-transparent bg-primary/10 text-primary">
                   Built-in
                 </span>
@@ -227,28 +246,34 @@ onMounted(() => {
                   Custom
                 </span>
               </td>
-              <td class="p-4 align-middle text-muted-foreground max-w-[300px] truncate">
+              <td class="px-3 py-2 align-middle text-muted-foreground max-w-[300px] truncate">
                 {{ tool.description || 'No description available' }}
               </td>
-              <td class="p-4 align-middle">
-                <span :class="tool.enabled ? 'text-green-600' : 'text-muted-foreground'" class="text-sm">
+              <td class="px-3 py-2 align-middle">
+                <span 
+                  class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors"
+                  :class="{
+                    'border-transparent bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100': tool.enabled,
+                    'border-transparent bg-secondary text-secondary-foreground': !tool.enabled
+                  }"
+                >
                   {{ tool.enabled ? 'Enabled' : 'Disabled' }}
                 </span>
               </td>
-              <td class="p-4 align-middle text-right" @click.stop>
+              <td class="px-3 py-2 align-middle text-right" @click.stop>
                 <div class="flex justify-end gap-2">
                   <button 
                     @click="viewToolDetails(tool)" 
                     class="p-2 hover:bg-accent rounded-md" 
                     title="View Details"
                   >
-                    <Settings class="h-4 w-4" />
+                    <Eye class="h-4 w-4" />
                   </button>
                   <button 
                     v-if="!tool.is_builtin"
                     @click="deleteTool(tool)" 
                     class="p-2 hover:bg-accent rounded-md text-destructive"
-                    title="Delete tool"
+                    title="Delete"
                   >
                     <Trash2 class="h-4 w-4" />
                   </button>
@@ -261,11 +286,11 @@ onMounted(() => {
     </div>
 
     <!-- Create Modal -->
-    <div v-if="showCreateModal" class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-      <div class="w-full max-w-2xl rounded-lg border bg-card p-6 shadow-lg max-h-[90vh] overflow-y-auto">
+    <div v-if="showCreateModal" class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" @click="handleBackdropClick">
+      <div class="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
         <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-semibold">Create Custom Tool</h3>
-          <button @click="showCreateModal = false" class="p-1 hover:bg-accent rounded-md">
+          <h3 class="text-lg font-semibold">Create Tool</h3>
+          <button @click="closeCreateModal" class="p-1 hover:bg-accent rounded-md">
             <span class="sr-only">Close</span>
             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
           </button>

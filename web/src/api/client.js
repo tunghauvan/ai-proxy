@@ -7,6 +7,9 @@ const api = axios.create({
   },
 })
 
+// Export the axios instance for custom requests
+export const axiosInstance = api
+
 export default {
   // Models
   getModels: () => api.get('/admin/models'),
@@ -17,6 +20,15 @@ export default {
   activateModel: (id) => api.post(`/admin/models/${id}/activate`),
   deactivateModel: (id) => api.post(`/admin/models/${id}/deactivate`),
   getBaseModels: () => api.get('/base-models'),
+  
+  // Model Versions
+  getModelVersions: (modelId) => api.get(`/admin/models/${modelId}/versions`),
+  createModelVersion: (modelId, data) => api.post(`/admin/models/${modelId}/versions`, data),
+  activateModelVersion: (modelId, version) => api.post(`/admin/models/${modelId}/versions/${version}/activate`),
+  deactivateModelVersion: (modelId, version) => api.post(`/admin/models/${modelId}/versions/${version}/deactivate`),
+  
+  // Model Sync
+  syncModels: (config, options = {}) => api.post('/admin/models/sync', { config, ...options }),
 
   // Tools
   getTools: (detailed = true) => api.get(`/admin/tools/detailed`),
@@ -40,8 +52,15 @@ export default {
   importTexts: (id, texts, sources) => api.post(`/rag/import/texts`, { texts, sources }, { params: { kb_id: id } }),
   importDocuments: (id, documents) => api.post(`/rag/import/documents`, { documents }, { params: { kb_id: id } }),
   
-  // Chat
-  chatCompletion: (data) => api.post('/chat/completions', data),
+  // KB Folder Sync
+  syncKBFolder: (id, data) => api.post(`/rag/sync-folder`, data, { params: { kb_id: id } }),
+  
+  // Chat (with optional custom headers)
+  chatCompletion: (data, config = {}) => api.post('/chat/completions', data, config),
+  chatCompletionStream: (data, config = {}) => api.post('/chat/completions', { ...data, stream: true }, {
+    ...config,
+    responseType: 'stream',
+  }),
 
   // Logs
   getLogs: (params) => api.get('/admin/logs', { params }),
@@ -49,4 +68,15 @@ export default {
   getLogStats: () => api.get('/admin/logs/stats'),
   deleteLog: (id) => api.delete(`/admin/logs/${id}`),
   clearLogs: (params) => api.delete('/admin/logs', { params }),
+  
+  // Agent Events (for timeline)
+  getAgentEvents: (logId) => api.get(`/admin/agent-events/${logId}`),
+  
+  // Tool Execution Logs
+  getToolLogs: (params) => api.get('/admin/tool-logs', { params }),
+  getToolLog: (id) => api.get(`/admin/tool-logs/${id}`),
+  getToolLogsByChat: (chatLogId) => api.get(`/admin/tool-logs/chat/${chatLogId}`),
+  getToolLogStats: () => api.get('/admin/tool-logs/stats'),
+  deleteToolLog: (id) => api.delete(`/admin/tool-logs/${id}`),
+  clearToolLogs: (params) => api.delete('/admin/tool-logs', { params }),
 }
