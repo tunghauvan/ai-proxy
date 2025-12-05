@@ -285,6 +285,60 @@ def get_chat_log_id_context() -> Optional[str]:
     return getattr(_request_context, 'chat_log_id', None)
 
 
+def _reset_sequence_counter():
+    """Reset the sequence counter for a new chat."""
+    _request_context.sequence_counter = 0
+
+
+def _get_next_sequence() -> int:
+    """Get the next sequence number for event logging."""
+    counter = getattr(_request_context, 'sequence_counter', 0) + 1
+    _request_context.sequence_counter = counter
+    return counter
+
+
+def _log_agent_event(
+    event_type: str,
+    node_name: Optional[str] = None,
+    event_data: Optional[Dict[str, Any]] = None,
+    tool_name: Optional[str] = None,
+    tool_input: Optional[Dict[str, Any]] = None,
+    tool_output: Optional[str] = None,
+    llm_input: Optional[List[Dict[str, Any]]] = None,
+    llm_output: Optional[str] = None,
+    duration_ms: Optional[int] = None,
+    status: str = "success",
+    error_message: Optional[str] = None,
+):
+    """Log an agent event to the database."""
+    chat_log_id = get_chat_log_id_context()
+    if not chat_log_id:
+        return  # No chat log to associate with
+    
+    try:
+        from server.server.database import AgentEventLogService
+        sequence = _get_next_sequence()
+        
+        AgentEventLogService.create_event(
+            chat_log_id=chat_log_id,
+            sequence_number=sequence,
+            event_type=event_type,
+            node_name=node_name,
+            event_data=event_data,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            tool_output=tool_output,
+            llm_input=llm_input,
+            llm_output=llm_output,
+            duration_ms=duration_ms,
+            status=status,
+            error_message=error_message,
+        )
+        print(f"[EVENT] #{sequence} {event_type} - {node_name or tool_name or 'agent'}")
+    except Exception as e:
+        print(f"[EVENT] Warning: Failed to log agent event: {e}")
+
+
 def _create_safe_execution_context() -> Dict[str, Any]:
     """Create a safe execution context for custom tool code."""
     import math
@@ -684,10 +738,32 @@ def create_llm_for_model(model_id: Optional[str] = None) -> ChatOpenAI:
 
 def retrieval_node(state: AgentState) -> dict:
     """Node that retrieves relevant context from the knowledge base"""
+    import time as time_module
+    start_time = time_module.time()
+    
     model_id = state.get("model_config_id")
     kb_id = state.get("kb_id")
+    chat_log_id = state.get("chat_log_id")
+    
+    # Set chat_log_id in context and reset sequence counter for new chat
+    _set_chat_log_id_context(chat_log_id)
+    _reset_sequence_counter()
+    
+    # Log agent_start event
+    _log_agent_event(
+        event_type="agent_start",
+        node_name="retrieval",
+        event_data={"model_id": model_id, "kb_id": kb_id, "rag_enabled": is_rag_enabled(model_id)},
+    )
     
     if not is_rag_enabled(model_id):
+        duration_ms = int((time_module.time() - start_time) * 1000)
+        _log_agent_event(
+            event_type="retrieval_skip",
+            node_name="retrieval",
+            duration_ms=duration_ms,
+            event_data={"reason": "RAG disabled"},
+        )
         return {"context": None}
     
     messages = state["messages"]
@@ -700,21 +776,56 @@ def retrieval_node(state: AgentState) -> dict:
             break
     
     if not last_human_msg:
+        duration_ms = int((time_module.time() - start_time) * 1000)
+        _log_agent_event(
+            event_type="retrieval_skip",
+            node_name="retrieval",
+            duration_ms=duration_ms,
+            event_data={"reason": "No human message found"},
+        )
         return {"context": None}
     
     # Retrieve relevant documents using KB-specific settings
     docs = retrieve_relevant_context(last_human_msg, kb_id=kb_id)
     context = format_context(docs)
     
+    duration_ms = int((time_module.time() - start_time) * 1000)
+    _log_agent_event(
+        event_type="retrieval_end",
+        node_name="retrieval",
+        duration_ms=duration_ms,
+        event_data={
+            "query": last_human_msg[:200],
+            "num_docs": len(docs) if docs else 0,
+            "has_context": bool(context),
+        },
+    )
+    
     return {"context": context}
 
 
 def agent_node(state: AgentState) -> dict:
     """Node that handles chat interactions with tool binding and RAG context"""
+    import time as time_module
+    start_time = time_module.time()
+    
     model_id = state.get("model_config_id")
     llm = create_llm_for_model(model_id)
     llm_with_tools = llm.bind_tools(get_active_tools(model_id))
     messages = list(state["messages"])
+    
+    # Set chat_log_id in context
+    chat_log_id = state.get("chat_log_id")
+    _set_chat_log_id_context(chat_log_id)
+    
+    # Log LLM start event
+    llm_input_messages = [{"role": type(m).__name__, "content": str(m.content)[:500]} for m in messages]
+    _log_agent_event(
+        event_type="llm_start",
+        node_name="agent",
+        llm_input=llm_input_messages,
+        event_data={"model_id": model_id, "num_messages": len(messages)},
+    )
     
     # If we have RAG context, inject it into the system message
     context = state.get("context")
@@ -737,8 +848,34 @@ Use this context to help answer the user's question. If the context is not relev
         if not has_system:
             messages.insert(0, SystemMessage(content=rag_system_content))
     
-    response = llm_with_tools.invoke(messages)
-    return {"messages": [response]}
+    try:
+        response = llm_with_tools.invoke(messages)
+        duration_ms = int((time_module.time() - start_time) * 1000)
+        
+        # Log LLM end event
+        has_tool_calls = hasattr(response, "tool_calls") and response.tool_calls
+        _log_agent_event(
+            event_type="llm_end",
+            node_name="agent",
+            llm_output=str(response.content)[:1000] if response.content else None,
+            duration_ms=duration_ms,
+            event_data={
+                "has_tool_calls": has_tool_calls,
+                "tool_calls": [{"name": tc.get("name", "unknown")} for tc in response.tool_calls] if has_tool_calls else None,
+            },
+        )
+        
+        return {"messages": [response]}
+    except Exception as e:
+        duration_ms = int((time_module.time() - start_time) * 1000)
+        _log_agent_event(
+            event_type="llm_end",
+            node_name="agent",
+            duration_ms=duration_ms,
+            status="error",
+            error_message=str(e),
+        )
+        raise
 
 
 def tool_node(state: AgentState) -> dict:
@@ -764,8 +901,11 @@ def tool_node(state: AgentState) -> dict:
     # Get builtin tool names for logging
     builtin_tool_names = set(BUILTIN_TOOLS.keys())
     
+    # Get current sequence for tool ordering
+    tool_sequence_start = getattr(_request_context, 'sequence_counter', 0)
+    
     # Execute each tool call
-    for tool_call in last_message.tool_calls:
+    for idx, tool_call in enumerate(last_message.tool_calls):
         tool_name = tool_call["name"]
         tool_args = tool_call["args"]
         
@@ -779,6 +919,15 @@ def tool_node(state: AgentState) -> dict:
             
             is_builtin = tool_name in builtin_tool_names
             
+            # Log tool_start event
+            _log_agent_event(
+                event_type="tool_start",
+                node_name="tools",
+                tool_name=tool_name,
+                tool_input=tool_args,
+                event_data={"is_builtin": is_builtin, "tool_index": idx},
+            )
+            
             try:
                 result = tool_map[tool_name].invoke(tool_args)
             except Exception as e:
@@ -790,6 +939,17 @@ def tool_node(state: AgentState) -> dict:
             
             # Calculate execution time
             execution_time_ms = int((time_module.time() - start_time) * 1000)
+            
+            # Log tool_end event
+            _log_agent_event(
+                event_type="tool_end",
+                node_name="tools",
+                tool_name=tool_name,
+                tool_output=str(result)[:1000] if result else None,
+                duration_ms=execution_time_ms,
+                status=status,
+                error_message=error_message,
+            )
             
             # Log builtin tool execution to database (custom tools log themselves)
             if is_builtin:
@@ -807,6 +967,7 @@ def tool_node(state: AgentState) -> dict:
                         error_traceback=error_traceback[:5000] if error_traceback and len(error_traceback) > 5000 else error_traceback,
                         is_builtin=True,
                         chat_log_id=chat_log_id,
+                        sequence_number=tool_sequence_start + idx + 1,
                     )
                     print(f"[TOOL] Logged builtin execution to database: {tool_name}, status={status}, time={execution_time_ms}ms, chat_log_id={chat_log_id}")
                 except Exception as log_err:

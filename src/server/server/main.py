@@ -1291,6 +1291,22 @@ async def get_tool_executions_for_chat(chat_log_id: str):
     }
 
 
+# ============ Agent Event Logs API ============
+
+@app.get("/v1/admin/agent-events/{chat_log_id}")
+async def get_agent_events_for_chat(chat_log_id: str):
+    """Get all agent events for a specific chat in sequential order - shows the LangGraph execution flow"""
+    from server.server.database import AgentEventLogService
+    
+    events = AgentEventLogService.get_events_for_chat(chat_log_id)
+    
+    return {
+        "chat_log_id": chat_log_id,
+        "events": [AgentEventLogService.event_to_dict(e) for e in events],
+        "count": len(events),
+    }
+
+
 @app.delete("/v1/admin/tool-logs/{log_id}")
 async def delete_tool_execution_log(log_id: str):
     """Delete a specific tool execution log"""

@@ -1198,17 +1198,21 @@ def logs_list(config, model, status, limit, offset, as_json):
 @click.argument("log_id")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 @click.option("--tools", "show_tools", is_flag=True, help="Show detailed tool execution logs")
+@click.option("--timeline", "show_timeline", is_flag=True, help="Show sequential execution timeline")
 @pass_config
-def logs_show(config, log_id, as_json, show_tools):
+def logs_show(config, log_id, as_json, show_tools, show_timeline):
     """Show details of a specific chat log"""
     result = api_request("GET", f"/v1/admin/logs/{log_id}", config.base_url)
     
-    # Also fetch tool execution logs for this chat
+    # Also fetch tool execution logs and agent events for this chat
     tool_logs = api_request_optional("GET", f"/v1/admin/tool-logs/chat/{log_id}", config.base_url)
+    agent_events = api_request_optional("GET", f"/v1/admin/agent-events/{log_id}", config.base_url)
     
     if as_json:
         if tool_logs:
             result["tool_execution_logs"] = tool_logs.get("logs", [])
+        if agent_events:
+            result["agent_events"] = agent_events.get("events", [])
         print_json(result)
         return
     
@@ -1224,6 +1228,84 @@ def logs_show(config, log_id, as_json, show_tools):
         click.echo(f"  Config ID: {result['model_config_id']}")
     if result.get("kb_id"):
         click.echo(f"  KB ID: {result['kb_id']}")
+    
+    # Show execution timeline if requested or if we have events
+    if show_timeline and agent_events and agent_events.get("events"):
+        click.echo("\n" + "=" * 70)
+        click.echo("EXECUTION TIMELINE")
+        click.echo("=" * 70)
+        
+        # Prepare table data
+        headers = ["Seq", "Time", "Event", "Details", "Duration", "Status"]
+        rows = []
+        
+        for event in agent_events["events"]:
+            seq = str(event.get("sequence_number", "?"))
+            timestamp = event.get("timestamp", "")[:19] if event.get("timestamp") else ""  # YYYY-MM-DD HH:MM:SS
+            event_type = event.get("event_type", "unknown").upper()
+            duration = f"{event.get('duration_ms')}ms" if event.get("duration_ms") else ""
+            status = event.get("status", "success")
+            status_icon = "✓" if status == "success" else "✗"
+            
+            # Build details based on event type
+            details = ""
+            if event_type == "AGENT_START":
+                data = event.get("event_data", {})
+                model = data.get("model_id", "default")
+                rag = "RAG" if data.get("rag_enabled", False) else "No RAG"
+                details = f"Model: {model}, {rag}"
+            
+            elif event_type == "RETRIEVAL_SKIP":
+                reason = event.get("event_data", {}).get("reason", "")
+                details = f"Reason: {reason}"
+            
+            elif event_type == "RETRIEVAL_END":
+                data = event.get("event_data", {})
+                query = data.get("query", "")[:50] + "..." if len(data.get("query", "")) > 50 else data.get("query", "")
+                docs = data.get("num_docs", 0)
+                details = f"Query: {query}, Docs: {docs}"
+            
+            elif event_type == "LLM_START":
+                messages = event.get("event_data", {}).get("num_messages", 0)
+                details = f"Messages: {messages}"
+            
+            elif event_type == "LLM_END":
+                data = event.get("event_data", {})
+                if data.get("has_tool_calls"):
+                    tools = data.get("tool_calls", [])
+                    tool_names = [t.get("name", "?") for t in tools]
+                    details = f"Tool calls: {', '.join(tool_names)}"
+                else:
+                    output = event.get("llm_output", "")
+                    details = output[:50] + "..." if len(output) > 50 else output
+                if event.get("error_message"):
+                    details = f"Error: {event['error_message'][:50]}..."
+            
+            elif event_type == "TOOL_START":
+                tool_name = event.get("tool_name", "unknown")
+                is_builtin = event.get("event_data", {}).get("is_builtin", False)
+                builtin_tag = "[builtin]" if is_builtin else "[custom]"
+                input_str = json.dumps(event.get("tool_input", {}))
+                details = f"{tool_name} {builtin_tag} - Input: {input_str[:50]}..." if len(input_str) > 50 else f"{tool_name} {builtin_tag} - Input: {input_str}"
+            
+            elif event_type == "TOOL_END":
+                tool_name = event.get("tool_name", "unknown")
+                output = event.get("tool_output", "")
+                if event.get("error_message"):
+                    details = f"{tool_name} - Error: {event['error_message'][:50]}..."
+                else:
+                    details = f"{tool_name} - Output: {output[:50]}..." if len(output) > 50 else f"{tool_name} - Output: {output}"
+            
+            elif event_type == "AGENT_END":
+                details = "Agent execution completed"
+            
+            else:
+                details = event_type.lower()
+            
+            rows.append([seq, timestamp, event_type, details, duration, status_icon])
+        
+        print_table(headers, rows, max_width=80)
+        click.echo("\n" + "=" * 70)
     
     click.echo("\n--- Tokens ---")
     click.echo(f"  Prompt: {result.get('prompt_tokens', '-')}")

@@ -242,6 +242,13 @@ class ChatLogDB(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    agent_events = relationship(
+        "AgentEventLogDB",
+        back_populates="chat_log",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="AgentEventLogDB.sequence_number",
+    )
     
     __table_args__ = (
         Index("ix_chat_logs_created_at_desc", created_at.desc()),
@@ -279,6 +286,9 @@ class ToolExecutionLogDB(Base):
     is_builtin = Column(Boolean, nullable=False, default=False)
     function_code_hash = Column(String(64), nullable=True)  # Hash of the function code for custom tools
     
+    # Sequence tracking
+    sequence_number = Column(Integer, nullable=True)  # Order in the execution flow
+    
     # Timestamps
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     
@@ -293,6 +303,52 @@ class ToolExecutionLogDB(Base):
     
     def __repr__(self):
         return f"<ToolExecutionLogDB(id={self.id}, tool={self.tool_name}, status={self.status})>"
+
+
+class AgentEventLogDB(Base):
+    """Database model for sequential agent execution events - captures the LangGraph flow."""
+    
+    __tablename__ = "agent_event_logs"
+    
+    id = Column(String(36), primary_key=True)  # UUID
+    chat_log_id = Column(String(36), ForeignKey("chat_logs.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # Event identification
+    sequence_number = Column(Integer, nullable=False)  # Order in the execution flow (1, 2, 3, ...)
+    event_type = Column(String(50), nullable=False)  # agent_start, llm_start, llm_end, tool_start, tool_end, agent_end, error
+    node_name = Column(String(100), nullable=True)  # LangGraph node name: agent, tools, etc.
+    
+    # Event details
+    event_data = Column(JSON, nullable=True)  # Event-specific data (input, output, etc.)
+    
+    # For tool events
+    tool_name = Column(String(255), nullable=True)
+    tool_input = Column(JSON, nullable=True)
+    tool_output = Column(Text, nullable=True)
+    
+    # For LLM events
+    llm_input = Column(JSON, nullable=True)  # Messages sent to LLM
+    llm_output = Column(Text, nullable=True)  # LLM response
+    
+    # Timing
+    duration_ms = Column(Integer, nullable=True)  # Duration of this event
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)  # Exact timestamp
+    
+    # Status
+    status = Column(String(20), nullable=False, default="success")  # success, error, pending
+    error_message = Column(Text, nullable=True)
+    
+    # Relationships
+    chat_log = relationship("ChatLogDB", back_populates="agent_events")
+    
+    __table_args__ = (
+        Index("ix_agent_event_chat_seq", chat_log_id, sequence_number),
+        Index("ix_agent_event_type", event_type),
+        Index("ix_agent_event_timestamp", timestamp),
+    )
+    
+    def __repr__(self):
+        return f"<AgentEventLogDB(id={self.id}, seq={self.sequence_number}, type={self.event_type})>"
 
 
 # Database initialization functions
@@ -746,5 +802,110 @@ class ToolExecutionLogService:
             "error_traceback": log.error_traceback,
             "is_builtin": log.is_builtin,
             "function_code_hash": log.function_code_hash,
+            "sequence_number": log.sequence_number,
             "created_at": log.created_at.isoformat() + "Z" if log.created_at else None,
+        }
+
+
+class AgentEventLogService:
+    """Service class for managing agent event logs - captures LangGraph execution flow."""
+    
+    @staticmethod
+    def create_event(
+        chat_log_id: str,
+        sequence_number: int,
+        event_type: str,
+        node_name: Optional[str] = None,
+        event_data: Optional[Dict[str, Any]] = None,
+        tool_name: Optional[str] = None,
+        tool_input: Optional[Dict[str, Any]] = None,
+        tool_output: Optional[str] = None,
+        llm_input: Optional[List[Dict[str, Any]]] = None,
+        llm_output: Optional[str] = None,
+        duration_ms: Optional[int] = None,
+        status: str = "success",
+        error_message: Optional[str] = None,
+        timestamp: Optional[datetime] = None,
+    ) -> AgentEventLogDB:
+        """Create a new agent event log entry."""
+        import uuid
+        
+        session = get_sync_session()
+        try:
+            event = AgentEventLogDB(
+                id=str(uuid.uuid4()),
+                chat_log_id=chat_log_id,
+                sequence_number=sequence_number,
+                event_type=event_type,
+                node_name=node_name,
+                event_data=event_data,
+                tool_name=tool_name,
+                tool_input=tool_input,
+                tool_output=tool_output,
+                llm_input=llm_input,
+                llm_output=llm_output,
+                duration_ms=duration_ms,
+                status=status,
+                error_message=error_message,
+                timestamp=timestamp or datetime.utcnow(),
+            )
+            session.add(event)
+            session.commit()
+            session.refresh(event)
+            return event
+        finally:
+            session.close()
+    
+    @staticmethod
+    def get_events_for_chat(chat_log_id: str) -> List[AgentEventLogDB]:
+        """Get all agent events for a specific chat in sequence order."""
+        session = get_sync_session()
+        try:
+            return session.query(AgentEventLogDB).filter(
+                AgentEventLogDB.chat_log_id == chat_log_id
+            ).order_by(AgentEventLogDB.sequence_number.asc()).all()
+        finally:
+            session.close()
+    
+    @staticmethod
+    def get_event_by_id(event_id: str) -> Optional[AgentEventLogDB]:
+        """Get a specific event by ID."""
+        session = get_sync_session()
+        try:
+            return session.query(AgentEventLogDB).filter(AgentEventLogDB.id == event_id).first()
+        finally:
+            session.close()
+    
+    @staticmethod
+    def delete_events_for_chat(chat_log_id: str) -> int:
+        """Delete all events for a specific chat."""
+        session = get_sync_session()
+        try:
+            count = session.query(AgentEventLogDB).filter(
+                AgentEventLogDB.chat_log_id == chat_log_id
+            ).delete()
+            session.commit()
+            return count
+        finally:
+            session.close()
+    
+    @staticmethod
+    def event_to_dict(event: AgentEventLogDB) -> Dict[str, Any]:
+        """Convert an AgentEventLogDB to a dictionary."""
+        return {
+            "id": event.id,
+            "chat_log_id": event.chat_log_id,
+            "sequence_number": event.sequence_number,
+            "event_type": event.event_type,
+            "node_name": event.node_name,
+            "event_data": event.event_data,
+            "tool_name": event.tool_name,
+            "tool_input": event.tool_input,
+            "tool_output": event.tool_output,
+            "llm_input": event.llm_input,
+            "llm_output": event.llm_output,
+            "duration_ms": event.duration_ms,
+            "status": event.status,
+            "error_message": event.error_message,
+            "timestamp": event.timestamp.isoformat() + "Z" if event.timestamp else None,
         }
