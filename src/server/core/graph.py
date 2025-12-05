@@ -196,6 +196,10 @@ class AgentState(TypedDict):
     kb_id: Optional[str]  # Knowledge base ID for per-request KB selection
     request_headers: Optional[Dict[str, str]]  # Headers from the original client request
     chat_log_id: Optional[str]  # Chat log ID for linking tool executions
+    # Token usage tracking (accumulated across all LLM calls)
+    prompt_tokens: Optional[int]
+    completion_tokens: Optional[int]
+    total_tokens: Optional[int]
 
 
 # Define builtin tools
@@ -852,6 +856,39 @@ Use this context to help answer the user's question. If the context is not relev
         response = llm_with_tools.invoke(messages)
         duration_ms = int((time_module.time() - start_time) * 1000)
         
+        # Extract token usage from response if available
+        input_tokens = 0
+        output_tokens = 0
+        llm_total_tokens = 0
+        
+        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+            usage = response.usage_metadata
+            input_tokens = usage.get('input_tokens', 0) or 0
+            output_tokens = usage.get('output_tokens', 0) or 0
+            llm_total_tokens = usage.get('total_tokens', 0) or 0
+        elif hasattr(response, 'response_metadata') and response.response_metadata:
+            # Fallback to response_metadata for some providers
+            meta = response.response_metadata
+            if 'token_usage' in meta:
+                usage = meta['token_usage']
+                input_tokens = usage.get('prompt_tokens', 0) or usage.get('input_tokens', 0) or 0
+                output_tokens = usage.get('completion_tokens', 0) or usage.get('output_tokens', 0) or 0
+                llm_total_tokens = usage.get('total_tokens', 0) or 0
+            elif 'usage' in meta:
+                usage = meta['usage']
+                input_tokens = usage.get('prompt_tokens', 0) or usage.get('input_tokens', 0) or 0
+                output_tokens = usage.get('completion_tokens', 0) or usage.get('output_tokens', 0) or 0
+                llm_total_tokens = usage.get('total_tokens', 0) or 0
+        
+        # Accumulate tokens from previous state
+        prev_prompt_tokens = state.get('prompt_tokens') or 0
+        prev_completion_tokens = state.get('completion_tokens') or 0
+        prev_total_tokens = state.get('total_tokens') or 0
+        
+        accumulated_prompt_tokens = prev_prompt_tokens + input_tokens
+        accumulated_completion_tokens = prev_completion_tokens + output_tokens
+        accumulated_total_tokens = prev_total_tokens + llm_total_tokens
+        
         # Log LLM end event
         has_tool_calls = hasattr(response, "tool_calls") and response.tool_calls
         _log_agent_event(
@@ -862,10 +899,18 @@ Use this context to help answer the user's question. If the context is not relev
             event_data={
                 "has_tool_calls": has_tool_calls,
                 "tool_calls": [{"name": tc.get("name", "unknown")} for tc in response.tool_calls] if has_tool_calls else None,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": llm_total_tokens,
             },
         )
         
-        return {"messages": [response]}
+        return {
+            "messages": [response],
+            "prompt_tokens": accumulated_prompt_tokens,
+            "completion_tokens": accumulated_completion_tokens,
+            "total_tokens": accumulated_total_tokens,
+        }
     except Exception as e:
         duration_ms = int((time_module.time() - start_time) * 1000)
         _log_agent_event(

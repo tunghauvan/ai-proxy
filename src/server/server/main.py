@@ -1526,6 +1526,11 @@ async def _stream_chat_response(
     tools_used = []
     tool_calls_log = []
     
+    # Track token usage (accumulated from all LLM calls)
+    accumulated_prompt_tokens = 0
+    accumulated_completion_tokens = 0
+    accumulated_total_tokens = 0
+    
     # Get chat_log_id for linking tool executions
     chat_log_id = chat_log.id if chat_log else None
     
@@ -1537,8 +1542,30 @@ async def _stream_chat_response(
         ):
             kind = event.get("event")
             
+            # Track token usage from LLM end events
+            if kind == "on_chat_model_end":
+                output = event.get("data", {}).get("output")
+                if output and hasattr(output, "usage_metadata") and output.usage_metadata:
+                    usage = output.usage_metadata
+                    accumulated_prompt_tokens += usage.get("input_tokens", 0) or 0
+                    accumulated_completion_tokens += usage.get("output_tokens", 0) or 0
+                    accumulated_total_tokens += usage.get("total_tokens", 0) or 0
+                elif output and hasattr(output, "response_metadata") and output.response_metadata:
+                    # Fallback to response_metadata
+                    meta = output.response_metadata
+                    if "token_usage" in meta:
+                        usage = meta["token_usage"]
+                        accumulated_prompt_tokens += usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0
+                        accumulated_completion_tokens += usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0
+                        accumulated_total_tokens += usage.get("total_tokens", 0) or 0
+                    elif "usage" in meta:
+                        usage = meta["usage"]
+                        accumulated_prompt_tokens += usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0
+                        accumulated_completion_tokens += usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0
+                        accumulated_total_tokens += usage.get("total_tokens", 0) or 0
+            
             # Track tool calls
-            if kind == "on_tool_start":
+            elif kind == "on_tool_start":
                 tool_name = event.get("name", "unknown")
                 tool_input = event.get("data", {}).get("input", {})
                 tools_used.append(tool_name)
@@ -1610,8 +1637,17 @@ async def _stream_chat_response(
         if chat_log:
             response_content = "".join(full_response)
             latency_ms = int((time.time() - start_time) * 1000)
-            prompt_tokens = sum(len(msg["content"].split()) for msg in request_messages if msg.get("content"))
-            completion_tokens = len(response_content.split())
+            
+            # Use accumulated tokens from LLM events, fallback to word-based estimate
+            prompt_tokens = accumulated_prompt_tokens
+            completion_tokens = accumulated_completion_tokens
+            total_tokens = accumulated_total_tokens
+            
+            if total_tokens == 0:
+                # Fallback to word-based estimate
+                prompt_tokens = sum(len(msg["content"].split()) for msg in request_messages if msg.get("content"))
+                completion_tokens = len(response_content.split()) if response_content else 0
+                total_tokens = prompt_tokens + completion_tokens
             
             try:
                 ChatLogService.update_log(
@@ -1621,11 +1657,11 @@ async def _stream_chat_response(
                     tool_calls=tool_calls_log if tool_calls_log else None,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
-                    total_tokens=prompt_tokens + completion_tokens,
+                    total_tokens=total_tokens,
                     latency_ms=latency_ms,
                     status="success",
                 )
-                logger.info(f"Chat log updated: {chat_log.id}, latency: {latency_ms}ms, tools: {tools_used}")
+                logger.info(f"Chat log updated: {chat_log.id}, latency: {latency_ms}ms, tools: {tools_used}, tokens: {total_tokens}")
             except Exception as e:
                 logger.error(f"Failed to update chat log: {e}")
         
@@ -1769,9 +1805,17 @@ async def chat_completions(
                 if tool_calls_log:
                     tool_calls_log[-1]["output"] = str(msg.content)[:1000]
         
-        # Calculate approximate token counts
-        prompt_tokens = sum(len(msg.content.split()) for msg in request.messages)
-        completion_tokens = len(response_content.split())
+        # Get token counts from graph result (accumulated from all LLM calls)
+        prompt_tokens = result.get("prompt_tokens") or 0
+        completion_tokens = result.get("completion_tokens") or 0
+        total_tokens = result.get("total_tokens") or 0
+        
+        # Fallback to word-based estimate if no token data
+        if total_tokens == 0:
+            prompt_tokens = sum(len(msg.content.split()) for msg in request.messages if msg.content)
+            completion_tokens = len(response_content.split()) if response_content else 0
+            total_tokens = prompt_tokens + completion_tokens
+        
         latency_ms = int((time.time() - start_time) * 1000)
         
         # Update chat log with success
@@ -1784,11 +1828,11 @@ async def chat_completions(
                     tool_calls=tool_calls_log if tool_calls_log else None,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
-                    total_tokens=prompt_tokens + completion_tokens,
+                    total_tokens=total_tokens,
                     latency_ms=latency_ms,
                     status="success",
                 )
-                logger.info(f"Chat log updated: {chat_log.id}, latency: {latency_ms}ms, tools: {tools_used}")
+                logger.info(f"Chat log updated: {chat_log.id}, latency: {latency_ms}ms, tools: {tools_used}, tokens: {total_tokens}")
             except Exception as e:
                 logger.error(f"Failed to update chat log: {e}")
         
@@ -1806,7 +1850,7 @@ async def chat_completions(
             usage=Usage(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
-                total_tokens=prompt_tokens + completion_tokens,
+                total_tokens=total_tokens,
             ),
         )
     except HTTPException:

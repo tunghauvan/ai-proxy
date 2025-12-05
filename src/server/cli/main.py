@@ -1271,13 +1271,19 @@ def logs_show(config, log_id, as_json, show_tools, show_timeline):
             
             elif event_type == "LLM_END":
                 data = event.get("event_data", {})
+                # Show token usage if available
+                input_tokens = data.get("input_tokens", 0)
+                output_tokens = data.get("output_tokens", 0)
+                token_info = f"[in:{input_tokens}/out:{output_tokens}]" if input_tokens or output_tokens else ""
+                
                 if data.get("has_tool_calls"):
                     tools = data.get("tool_calls", [])
                     tool_names = [t.get("name", "?") for t in tools]
-                    details = f"Tool calls: {', '.join(tool_names)}"
+                    details = f"{token_info} Tool calls: {', '.join(tool_names)}" if token_info else f"Tool calls: {', '.join(tool_names)}"
                 else:
                     output = event.get("llm_output", "")
-                    details = output[:50] + "..." if len(output) > 50 else output
+                    output_preview = output[:40] + "..." if len(output) > 40 else output
+                    details = f"{token_info} {output_preview}" if token_info else output_preview
                 if event.get("error_message"):
                     details = f"Error: {event['error_message'][:50]}..."
             
