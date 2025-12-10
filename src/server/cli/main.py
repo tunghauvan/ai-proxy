@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import subprocess
+import ast
 from typing import Optional, List
 from pathlib import Path
 
@@ -569,6 +570,37 @@ def tools_delete(config, tool_id, yes):
     
     api_request("DELETE", f"/v1/admin/tools/{tool_id}", config.base_url)
     click.echo(f"✅ Tool '{tool_id}' deleted successfully!")
+
+
+@tools.command("test")
+@click.argument("tool_id")
+@click.option("--input", "-i", required=True, help="Test input for the tool")
+@pass_config
+def tools_test(config, tool_id, input):
+    """Test a tool with given input by calling the server API"""
+    try:
+        # Get tool details
+        data = api_request("GET", f"/v1/admin/tools/{tool_id}", config.base_url)
+        parameters = data.get("parameters", [])
+        
+        # Prepare arguments based on parameters
+        if len(parameters) == 1:
+            param_name = parameters[0]["name"]
+            args = {param_name: input}
+        elif len(parameters) == 0:
+            args = {}
+            click.echo("⚠️  Tool has no defined parameters, input ignored.")
+        else:
+            click.echo("❌ Tool has multiple parameters, not supported for simple test.")
+            return
+        
+        # Call the test endpoint
+        result = api_request("POST", f"/v1/admin/tools/{tool_id}/test", config.base_url, json=args)
+        
+        click.echo(f"✅ Test result: {result['result']}")
+        
+    except Exception as e:
+        click.echo(f"❌ Error testing tool: {str(e)}")
 
 
 # ==================== KNOWLEDGE BASE COMMANDS ====================

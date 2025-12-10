@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import httpx
+import requests
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, AIMessageChunk
 
 # Load environment variables
@@ -877,7 +878,7 @@ async def test_admin_tool(tool_id: str, args: Dict[str, Any] = {}):
             # Execute the custom tool code
             local_vars = {}
             try:
-                exec(tool.function_code, {"__builtins__": __builtins__}, local_vars)
+                exec(tool.function_code, {"__builtins__": __builtins__, "requests": requests}, local_vars)
                 if "main" not in local_vars:
                     raise HTTPException(status_code=400, detail="Tool code must define a 'main' function")
                 result = local_vars["main"](**args)
