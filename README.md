@@ -17,6 +17,8 @@ A powerful proxy server that provides an OpenAI-compatible API for LangChain app
 
 ### Using Docker Compose (Recommended)
 
+#### 1. Initial Setup
+
 ```bash
 # Clone the repository
 git clone https://github.com/tunghauvan/langchain-proxy.git
@@ -25,16 +27,85 @@ cd langchain-proxy
 # Copy environment template
 cp .env.example .env
 
-# Edit .env with your API keys
+# Edit .env with your API keys (Ollama, LangSmith, OpenAI API keys)
 nano .env
 
 # Start all services
 docker-compose up -d
 
+# Verify services are running
+docker-compose ps
+
 # Access the services:
 # - API Server: http://localhost:8000
 # - Admin UI: http://localhost:3000
 # - API Docs: http://localhost:8000/docs
+# - Mock API: http://localhost:8080 (for testing)
+```
+
+#### 2. Load Tools and Create Models
+
+```bash
+# Load all available tools into the system
+docker-compose exec langchain-proxy python scripts/reset_and_import_tools.py
+
+# Verify tools were loaded
+docker-compose exec langchain-proxy python -m server.cli.main tools list
+
+# Output should show:
+# - calculator
+# - text_analyzer
+# - unit_converter
+# - weather
+# - location
+# - roll_dice
+# - random_number
+# - flip_coin
+```
+
+#### 3. Create Models with Tools
+
+```bash
+# Create a weather-only model
+docker-compose exec langchain-proxy python -m server.cli.main models create \
+  --name weather-model \
+  --base-model gpt-oss:20b-cloud \
+  --tool weather
+
+# Create a location-only model
+docker-compose exec langchain-proxy python -m server.cli.main models create \
+  --name location-model \
+  --base-model gpt-oss:20b-cloud \
+  --tool location
+
+# Create a comprehensive location+weather model
+docker-compose exec langchain-proxy python -m server.cli.main models create \
+  --name location-weather-model \
+  --base-model gpt-oss:20b-cloud \
+  --tool location \
+  --tool weather
+
+# List all models
+docker-compose exec langchain-proxy python -m server.cli.main models list
+```
+
+#### 4. Test the Models
+
+```bash
+# Test weather model
+docker-compose exec langchain-proxy python -m server.cli.main chat send \
+  "What's the weather in Tokyo?" \
+  --model weather-model
+
+# Test location model
+docker-compose exec langchain-proxy python -m server.cli.main chat send \
+  "What is my current location?" \
+  --model location-model
+
+# Test location + weather model
+docker-compose exec langchain-proxy python -m server.cli.main chat send \
+  "What's my current location and the weather there?" \
+  --model location-weather-model
 ```
 
 ### Manual Installation
@@ -48,10 +119,20 @@ cp .env.example .env
 # Edit .env with your configuration
 
 # Initialize database
-langchain-proxy-server --init-db
+python -m server.server.main --init-db
+
+# Load tools
+python scripts/reset_and_import_tools.py
+
+# Create models
+python -m server.cli.main models create \
+  --name location-weather-model \
+  --base-model gpt-oss:20b-cloud \
+  --tool location \
+  --tool weather
 
 # Start the server
-langchain-proxy-server
+python -m server.server.main
 ```
 
 ## Configuration
@@ -69,38 +150,101 @@ LANGSMITH_PROJECT=your_project
 LANGSMITH_API_KEY=your_langsmith_key
 LANGSMITH_TRACING=true
 
-# RAG Configuration
+# RAG Configuration (OpenAI API)
 RAG_EMBEDDING_ENGINE=openai
-RAG_OPENAI_API_BASE_URL=https://api.openai.com/v1
+RAG_OPENAI_API_BASE_URL=https://mkp-api.fptcloud.com/v1
 RAG_OPENAI_API_KEY=your_openai_key
-RAG_EMBEDDING_MODEL=text-embedding-3-small
+RAG_EMBEDDING_MODEL=multilingual-e5-large
+RAG_RERANKING_MODEL=bge-reranker-v2-m3
 
-# Database
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/langchain_proxy
+# Database (PostgreSQL)
+DATABASE_URL=postgresql+asyncpg://langchain:langchain_secret@postgres:5432/langchain_proxy
+
+# Vector Database (Qdrant)
+QDRANT_HOST=qdrant-langchain
+QDRANT_PORT=6333
+
+# RAG Settings
+RAG_ENABLED=true
 ```
+
+## Available Tools
+
+The system comes with built-in tools that can be assigned to models:
+
+### Pre-loaded Tools
+
+1. **calculator** - Mathematical calculations (+, -, *, /, **)
+2. **text_analyzer** - Text analysis (characters, words, sentences)
+3. **unit_converter** - Unit conversions (temperature, length, weight)
+4. **weather** - Weather information for any city (mock data from API)
+5. **location** - Current location information (calls mock API with user context)
+6. **roll_dice** - Roll dice with customizable sides and count
+7. **random_number** - Generate random numbers in a range
+8. **flip_coin** - Flip coins and get results
+
+### Built-in Tools (Always Available)
+- **get_datetime** - Get current date and time
+- **search_knowledge_base** - Search the RAG knowledge base
 
 ## Usage
 
 ### CLI Commands
 
+#### Tool Management
+
 ```bash
-# Model management
-lcp models list
-lcp models create --name my-model --base-model gpt-4
-lcp models activate my-model
-
-# Tool management
+# List all available tools
 lcp tools list
-lcp tools create --name calculator --code-file calculator.py
+lcp tools list --detailed
 
-# Knowledge base operations
-lcp kb create --name docs --description "Documentation"
-lcp kb import document.pdf --kb-id docs
-lcp kb search "How to use the API?"
+# Get details of a specific tool
+lcp tools get calculator
 
-# Chat interface
-lcp chat send "Hello, how are you?"
-lcp chat interactive --model my-model
+# Create a new custom tool
+lcp tools create --name my-tool --description "My custom tool" --code-file my_tool.py
+
+# Test a tool
+lcp tools test calculator --input "2 + 2"
+lcp tools test weather --input "Tokyo"
+lcp tools test location --input "user-vn"
+```
+
+#### Model Management
+
+```bash
+# List all models
+lcp models list
+
+# Get model details
+lcp models get location-weather-model
+
+# Create models with specific tools
+lcp models create --name weather-only --base-model gpt-oss:20b-cloud --tool weather
+lcp models create --name all-tools --base-model gpt-oss:20b-cloud \
+  --tool calculator --tool weather --tool location --tool text_analyzer
+
+# Update a model (enable/disable tools)
+lcp models update location-weather-model --tool location --tool weather
+
+# Enable/disable models
+lcp models update my-model --enabled
+lcp models update my-model --disabled
+
+# Delete a model
+lcp models delete my-model --yes
+```
+
+#### Chat Interface
+
+```bash
+# Single message chat
+lcp chat send "What's the weather in Paris?" --model weather-model
+lcp chat send "Where am I?" --model location-model
+lcp chat send "What's my location and weather?" --model location-weather-model
+
+# Interactive chat
+lcp chat interactive --model location-weather-model
 ```
 
 ### API Usage

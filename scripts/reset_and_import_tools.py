@@ -227,6 +227,71 @@ def main(**kwargs):
 '''
 
 
+def get_location_code():
+    """Location tool with main function."""
+    return '''
+def main(**kwargs):
+    """
+    Get current location information from API.
+    Args: user_id (str, optional) - User identifier for location lookup
+    """
+    import requests
+    
+    user_id = kwargs.get('user_id', 'anonymous')
+    
+    # Mock API URL (hardcoded for security)
+    mock_api_url = "http://mock-api:8080"
+    
+    # Build headers to forward
+    headers_to_forward = {
+        "Content-Type": "application/json",
+        "x-user-id": user_id
+    }
+    
+    try:
+        # Make the request to mock API
+        response = requests.get(
+            f"{mock_api_url}/location",
+            headers=headers_to_forward,
+            timeout=30
+        )
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        # Extract location data
+        location = result.get("location", {})
+        city = location.get("city", "Unknown")
+        country = location.get("country", "Unknown")
+        lat = location.get("lat", 0)
+        lon = location.get("lon", 0)
+        timezone = location.get("timezone", "Unknown")
+        
+        return f"Current location: {city}, {country} (Lat: {lat}, Lon: {lon}, Timezone: {timezone})"
+        
+    except Exception as e:
+        # Fallback to mock data if API fails
+        import random
+        
+        locations = [
+            {"city": "Ho Chi Minh City", "country": "Vietnam", "lat": 10.8231, "lon": 106.6297, "timezone": "Asia/Ho_Chi_Minh"},
+            {"city": "Hanoi", "country": "Vietnam", "lat": 21.0285, "lon": 105.8542, "timezone": "Asia/Ho_Chi_Minh"},
+            {"city": "New York", "country": "USA", "lat": 40.7128, "lon": -74.0060, "timezone": "America/New_York"},
+            {"city": "London", "country": "UK", "lat": 51.5074, "lon": -0.1278, "timezone": "Europe/London"},
+            {"city": "Tokyo", "country": "Japan", "lat": 35.6762, "lon": 139.6503, "timezone": "Asia/Tokyo"},
+        ]
+        
+        location = random.choice(locations)
+        city = location["city"]
+        country = location["country"]
+        lat = location["lat"]
+        lon = location["lon"]
+        timezone = location["timezone"]
+        
+        return f"Current location (fallback): {city}, {country} (Lat: {lat}, Lon: {lon}, Timezone: {timezone}) - API Error: {str(e)}"
+'''
+
+
 def get_roll_dice_code():
     """Roll dice tool with main function."""
     return '''
@@ -409,6 +474,15 @@ def main():
             "function_code": get_weather_code(),
             "parameters": [
                 {"name": "city", "type": "string", "description": "Name of the city", "required": True}
+            ]
+        },
+        {
+            "name": "location",
+            "description": "Get current location information",
+            "category": "information",
+            "function_code": get_location_code(),
+            "parameters": [
+                {"name": "user_id", "type": "string", "description": "User identifier for location lookup (optional)", "required": False, "default": "anonymous"}
             ]
         },
         {
